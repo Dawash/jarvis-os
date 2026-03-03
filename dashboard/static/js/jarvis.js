@@ -238,24 +238,43 @@ function connectWebSocket() {
     };
 }
 
+// ── Agentic Task Tracker State ──────────────────────────────────
+window._activeTaskId = null;
+
 function handleWSMessage(data) {
     switch (data.type) {
+        case 'command_accepted':
+            showTyping(false);
+            showPlanningIndicator();
+            break;
+
         case 'command_result':
             showTyping(false);
-            if (data.result) {
+            removePlanningIndicator();
+            if (window._activeTaskId) {
+                finalizeTaskProgress(data.status === 'completed' ? 'completed' : 'error');
+            }
+            if (data.result && data.result !== '[CLEAR]') {
                 addChatMessage('jarvis', data.result);
+            }
+            if (data.result === '[CLEAR]') {
+                const chat = document.getElementById('assistant-chat');
+                if (chat) chat.innerHTML = '';
             }
             if (data.error) {
                 addChatMessage('system', `Error: ${data.error}`);
             }
+            window._activeTaskId = null;
             break;
 
         case 'kernel_event':
             handleKernelEvent(data.event);
             break;
 
-        case 'agent_step':
-            handleAgentStep(data);
+        case 'agent_cancelled':
+            finalizeTaskProgress('cancelled');
+            window._activeTaskId = null;
+            addNotification('Agent cancelled', 'warning');
             break;
 
         case 'voice_transcript':
@@ -264,7 +283,6 @@ function handleWSMessage(data) {
 
         case 'voice_command':
             closeVoiceOverlay();
-            // Process as command
             addChatMessage('user', `[Voice] ${data.command}`);
             if (window.jarvisWS && window.jarvisWS.readyState === WebSocket.OPEN) {
                 window.jarvisWS.send(JSON.stringify({
@@ -280,7 +298,6 @@ function handleWSMessage(data) {
             break;
 
         case 'speak':
-            // Use Web Speech API for TTS in the browser
             if ('speechSynthesis' in window) {
                 const utter = new SpeechSynthesisUtterance(data.text);
                 utter.rate = 1.0;
@@ -299,36 +316,195 @@ function handleKernelEvent(event) {
     if (!event) return;
 
     switch (event.type) {
+        case 'agent.planning':
+            removePlanningIndicator();
+            showPlanningIndicator(event.data.message || 'Creating execution plan...');
+            break;
+
+        case 'agent.plan_ready':
+            removePlanningIndicator();
+            window._activeTaskId = event.data.agent_id;
+            showTaskProgress(event.data.agent_id, event.data.plan, event.data.task);
+            break;
+
         case 'agent.spawned':
             addNotification(`Agent spawned: ${event.data.name}`, 'info');
+            if (!window._activeTaskId) window._activeTaskId = event.data.agent_id;
             break;
-        case 'agent.completed':
-            addNotification(`Agent completed: ${event.data.result?.substring(0, 100) || 'Done'}`, 'success');
-            break;
+
         case 'agent.step':
-            // Update agent step in chat if assistant is open
-            if (event.data.step) {
-                const step = event.data.step;
-                let stepHtml = '';
-                if (step.actions && step.actions.length > 0) {
-                    step.actions.forEach(a => {
-                        stepHtml += `<div class="agent-step">
-                            <div class="step-header">
-                                <span class="step-number">STEP ${step.step}</span>
-                                <span class="step-tool">${escapeHTML(a.tool)}</span>
-                            </div>
-                            <div class="step-content">${escapeHTML(a.result?.substring(0, 500) || '')}</div>
-                        </div>`;
-                    });
-                }
-                if (step.thought) {
-                    addChatMessage('agent', step.thought, stepHtml);
-                }
+            updateTaskStep(event.data);
+            break;
+
+        case 'agent.completed':
+            if (event.data.agent_id === window._activeTaskId) {
+                finalizeTaskProgress(event.data.status === 'completed' ? 'completed' : 'error');
             }
             break;
+
         case 'system.boot':
             addNotification('System boot complete', 'success');
             break;
+    }
+}
+
+// ── Planning Indicator ─────────────────────────────────────────
+function showPlanningIndicator(message) {
+    const chat = document.getElementById('assistant-chat');
+    if (!chat) return;
+    removePlanningIndicator();
+    const el = document.createElement('div');
+    el.id = 'planning-indicator';
+    el.className = 'planning-indicator';
+    el.innerHTML = `
+        <div class="planning-spinner"></div>
+        <div class="planning-text">${escapeHTML(message || 'Analyzing task and creating plan...')}</div>
+    `;
+    chat.appendChild(el);
+    chat.scrollTop = chat.scrollHeight;
+}
+
+function removePlanningIndicator() {
+    const el = document.getElementById('planning-indicator');
+    if (el) el.remove();
+}
+
+// ── Task Progress Tracker ──────────────────────────────────────
+function showTaskProgress(agentId, plan, task) {
+    const chat = document.getElementById('assistant-chat');
+    if (!chat) return;
+
+    const steps = plan?.steps || [];
+    const containerId = `task-progress-${agentId}`;
+    const existing = document.getElementById(containerId);
+    if (existing) existing.remove();
+
+    let stepsHtml = '';
+    steps.forEach((step, i) => {
+        if (step.tool === 'direct_response') return;
+        stepsHtml += `
+            <div class="task-step-item" id="step-${agentId}-${step.id || i}">
+                <div class="task-step-icon pending" id="step-icon-${agentId}-${step.id || i}">${i + 1}</div>
+                <div class="task-step-content">
+                    <div class="task-step-desc">${escapeHTML(step.description)}</div>
+                    ${step.tool && step.tool !== 'autonomous' ? `<span class="task-step-tool">${escapeHTML(step.tool)}</span>` : ''}
+                </div>
+            </div>
+        `;
+    });
+
+    const el = document.createElement('div');
+    el.id = containerId;
+    el.className = 'task-progress-container';
+    el.innerHTML = `
+        <div class="task-progress-header">
+            <div class="task-progress-title">Task Execution</div>
+            <div class="task-progress-status">
+                <span id="task-status-text-${agentId}">Running</span>
+                <button class="task-cancel-btn" onclick="cancelActiveTask('${agentId}')">Cancel</button>
+            </div>
+        </div>
+        <div class="task-progress-bar-wrapper">
+            <div class="task-progress-bar">
+                <div class="task-progress-fill indeterminate" id="task-progress-fill-${agentId}" style="width:0%"></div>
+            </div>
+        </div>
+        ${steps.length > 0 ? `
+            <div class="task-steps-toggle" onclick="toggleTaskSteps('${agentId}')">&#9654; ${steps.length} planned steps</div>
+            <div class="task-steps-list" id="task-steps-${agentId}" style="display:none">${stepsHtml}</div>
+        ` : ''}
+    `;
+    chat.appendChild(el);
+    chat.scrollTop = chat.scrollHeight;
+}
+
+function toggleTaskSteps(agentId) {
+    const list = document.getElementById(`task-steps-${agentId}`);
+    if (!list) return;
+    const isHidden = list.style.display === 'none';
+    list.style.display = isHidden ? 'block' : 'none';
+    const toggle = list.previousElementSibling;
+    if (toggle) toggle.innerHTML = toggle.innerHTML.replace(isHidden ? '&#9654;' : '&#9660;', isHidden ? '&#9660;' : '&#9654;');
+}
+
+function updateTaskStep(data) {
+    const agentId = data.agent_id;
+    const step = data.step;
+    const planProgress = data.plan_progress;
+    if (!step) return;
+
+    const chat = document.getElementById('assistant-chat');
+    const container = document.getElementById(`task-progress-${agentId}`);
+
+    if (planProgress && container) {
+        const fill = document.getElementById(`task-progress-fill-${agentId}`);
+        if (fill) { fill.classList.remove('indeterminate'); fill.style.width = `${planProgress.percent}%`; }
+        const statusText = document.getElementById(`task-status-text-${agentId}`);
+        if (statusText) statusText.textContent = `Step ${data.total_steps || step.step}`;
+    }
+
+    // Auto-expand steps list
+    if (container) {
+        const stepsList = document.getElementById(`task-steps-${agentId}`);
+        if (stepsList && stepsList.style.display === 'none') {
+            stepsList.style.display = 'block';
+            const toggle = stepsList.previousElementSibling;
+            if (toggle) toggle.innerHTML = toggle.innerHTML.replace('&#9654;', '&#9660;');
+        }
+    }
+
+    // Show actions in chat
+    if (step.actions && step.actions.length > 0) {
+        step.actions.forEach(a => {
+            const resultShort = typeof a.result === 'string' ? a.result.substring(0, 300) : '';
+            let actionHtml = `<div class="agent-step">
+                <div class="step-header">
+                    <span class="step-number">STEP ${step.step}</span>
+                    <span class="step-tool">${escapeHTML(a.tool)}</span>
+                    <span class="step-tool" style="background:${a.status === 'error' ? 'rgba(255,59,48,0.2);color:var(--danger)' : 'rgba(48,209,88,0.2);color:var(--success)'}">${a.status || 'done'}</span>
+                </div>
+                ${resultShort ? `<div class="step-content">${escapeHTML(resultShort)}</div>` : ''}
+            </div>`;
+            if (step.thought) {
+                addChatMessage('agent', step.thought, actionHtml);
+                step.thought = '';
+            } else {
+                addChatMessage('agent', `Executing ${a.tool}...`, actionHtml);
+            }
+        });
+    } else if (step.thought) {
+        addChatMessage('agent', step.thought);
+    }
+
+    if (chat) chat.scrollTop = chat.scrollHeight;
+}
+
+function finalizeTaskProgress(status) {
+    const agentId = window._activeTaskId;
+    if (!agentId) return;
+    const container = document.getElementById(`task-progress-${agentId}`);
+    if (!container) return;
+
+    const fill = document.getElementById(`task-progress-fill-${agentId}`);
+    const statusText = document.getElementById(`task-status-text-${agentId}`);
+    const cancelBtn = container.querySelector('.task-cancel-btn');
+
+    if (fill) {
+        fill.classList.remove('indeterminate');
+        if (status === 'completed') { fill.style.width = '100%'; fill.style.background = 'linear-gradient(90deg, var(--success), var(--accent))'; }
+        else { fill.style.background = 'var(--danger)'; }
+    }
+    if (statusText) {
+        const labels = { completed: 'Completed', error: 'Failed', cancelled: 'Cancelled' };
+        statusText.textContent = labels[status] || status;
+        statusText.style.color = status === 'completed' ? 'var(--success)' : 'var(--danger)';
+    }
+    if (cancelBtn) cancelBtn.remove();
+}
+
+function cancelActiveTask(agentId) {
+    if (window.jarvisWS && window.jarvisWS.readyState === WebSocket.OPEN) {
+        window.jarvisWS.send(JSON.stringify({ type: 'cancel_agent', agent_id: agentId }));
     }
 }
 

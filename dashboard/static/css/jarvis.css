@@ -890,6 +890,237 @@ code {
     color: var(--primary);
 }
 
+/* ── Agentic Task Progress Tracker ────────────────────────────── */
+.task-progress-container {
+    margin: 12px 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(0, 20, 40, 0.6);
+    overflow: hidden;
+    animation: message-in 0.3s ease-out;
+}
+
+.task-progress-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: rgba(0, 212, 255, 0.05);
+    border-bottom: 1px solid var(--border);
+}
+
+.task-progress-title {
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--primary);
+    text-transform: uppercase;
+}
+
+.task-progress-status {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.task-progress-bar-wrapper {
+    padding: 0 16px;
+    padding-top: 10px;
+}
+
+.task-progress-bar {
+    width: 100%;
+    height: 3px;
+    background: rgba(0, 212, 255, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.task-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary), var(--accent));
+    border-radius: 2px;
+    transition: width 0.5s ease;
+    box-shadow: 0 0 8px var(--primary-dim);
+}
+
+.task-progress-fill.indeterminate {
+    width: 30% !important;
+    animation: progress-slide 1.5s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+    0% { margin-left: 0%; }
+    50% { margin-left: 70%; }
+    100% { margin-left: 0%; }
+}
+
+.task-steps-list {
+    padding: 10px 16px 14px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.task-step-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.05);
+}
+
+.task-step-item:last-child {
+    border-bottom: none;
+}
+
+.task-step-icon {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1.5px solid var(--text-dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    flex-shrink: 0;
+    margin-top: 1px;
+    transition: all 0.3s;
+}
+
+.task-step-icon.completed {
+    border-color: var(--success);
+    color: var(--success);
+    background: rgba(48, 209, 88, 0.1);
+}
+
+.task-step-icon.running {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: rgba(0, 212, 255, 0.1);
+    animation: step-pulse 1.5s ease-in-out infinite;
+}
+
+.task-step-icon.error {
+    border-color: var(--danger);
+    color: var(--danger);
+    background: rgba(255, 59, 48, 0.1);
+}
+
+.task-step-icon.pending {
+    border-color: var(--text-dim);
+    color: var(--text-dim);
+}
+
+@keyframes step-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(0, 212, 255, 0.3); }
+    50% { box-shadow: 0 0 0 5px rgba(0, 212, 255, 0); }
+}
+
+.task-step-content {
+    flex: 1;
+}
+
+.task-step-desc {
+    font-family: var(--font-body);
+    font-size: 13px;
+    color: var(--text-primary);
+    line-height: 1.4;
+}
+
+.task-step-tool {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--primary);
+    background: var(--primary-dim);
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-top: 3px;
+    display: inline-block;
+}
+
+.task-step-result {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    padding: 6px 8px;
+    background: rgba(0, 10, 25, 0.5);
+    border-radius: 4px;
+    max-height: 80px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.task-cancel-btn {
+    padding: 4px 12px;
+    border: 1px solid rgba(255, 59, 48, 0.3);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--danger);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    transition: all 0.2s;
+}
+
+.task-cancel-btn:hover {
+    background: rgba(255, 59, 48, 0.1);
+    border-color: var(--danger);
+}
+
+/* Plan steps toggle */
+.task-steps-toggle {
+    padding: 6px 16px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    transition: color 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.task-steps-toggle:hover {
+    color: var(--primary);
+}
+
+/* Planning animation */
+.planning-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: rgba(0, 212, 255, 0.03);
+    animation: message-in 0.3s ease-out;
+}
+
+.planning-spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--border);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: task-spin 0.8s linear infinite;
+}
+
+.planning-text {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
 /* ── HUD Elements ────────────────────────────────────────────── */
 .hud-ring {
     position: fixed;

@@ -101,12 +101,12 @@ async def startup():
     config = load_config()
     kernel = get_kernel()
 
-    # Register all subsystems
+    # Register all subsystems (order matters: plugins before agents)
     kernel.register_subsystem("system_control", SystemControl())
+    kernel.register_subsystem("websocket", WebSocketManager())
+    kernel.register_subsystem("plugins", PluginManager(config))
     kernel.register_subsystem("agents", AgentManager(config))
     kernel.register_subsystem("voice", VoiceEngine(config))
-    kernel.register_subsystem("plugins", PluginManager(config))
-    kernel.register_subsystem("websocket", WebSocketManager())
 
     # Boot the kernel
     await kernel.boot()

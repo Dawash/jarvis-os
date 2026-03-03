@@ -1,6 +1,7 @@
 """
-JARVIS-OS Agent — Individual AI agent that can use tools and complete tasks.
-Each agent has a specialization, tools, and autonomous execution loop.
+JARVIS-OS Agent — Autonomous AI agent with plan-driven execution.
+Executes tasks using a Think → Act → Observe loop with self-correction.
+Supports streaming progress updates to the dashboard in real-time.
 """
 
 import asyncio
@@ -17,6 +18,7 @@ logger = logging.getLogger("jarvis.agent")
 
 class AgentStatus(str, Enum):
     IDLE = "idle"
+    PLANNING = "planning"
     RUNNING = "running"
     WAITING = "waiting"
     COMPLETED = "completed"
@@ -26,8 +28,8 @@ class AgentStatus(str, Enum):
 
 class Agent:
     """
-    An autonomous AI agent that can reason, use tools, and complete tasks.
-    Runs an execution loop: Think -> Act -> Observe -> Repeat.
+    An autonomous AI agent that plans, executes tools, and self-corrects.
+    Runs an execution loop: Plan → Think → Act → Observe → Repeat.
     """
 
     def __init__(
@@ -38,6 +40,7 @@ class Agent:
         llm_provider=None,
         system_control=None,
         memory=None,
+        plugin_manager=None,
         tools: list = None,
     ):
         self.id = agent_id or f"agent_{uuid.uuid4().hex[:8]}"
@@ -46,27 +49,34 @@ class Agent:
         self.llm = llm_provider
         self.system_control = system_control
         self.memory = memory
+        self.plugin_manager = plugin_manager
         self.status = AgentStatus.IDLE
         self.created_at = datetime.now()
 
         # Execution state
         self.task = None
+        self.plan = None
         self.messages = []
         self.steps = []
         self.result = None
         self.error = None
-        self.max_steps = 20
+        self.max_steps = 25
+        self.retry_count = 0
+        self.max_retries = 2
         self._cancel_flag = False
+
+        # Action history for undo support
+        self.action_history = []
 
         # Tools available to this agent
         self.tools = tools or self._default_tools()
 
     def _default_tools(self) -> list:
         """Define the tools available to this agent."""
-        return [
+        tools = [
             {
                 "name": "execute_shell",
-                "description": "Execute a shell command on the system. Use for running programs, scripts, system commands.",
+                "description": "Execute a shell command on the system. Use for running programs, scripts, system commands. Returns stdout, stderr, and return code.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -78,7 +88,7 @@ class Agent:
             },
             {
                 "name": "read_file",
-                "description": "Read the contents of a file.",
+                "description": "Read the contents of a file. Returns content, size, and line count.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -120,6 +130,41 @@ class Agent:
                         "pattern": {"type": "string", "description": "Glob pattern (e.g. *.py)"},
                     },
                     "required": ["directory", "pattern"],
+                },
+            },
+            {
+                "name": "web_search",
+                "description": "Search the web for real-time information. Returns titles, URLs, and snippets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The search query"},
+                        "max_results": {"type": "integer", "description": "Max results (default 5)"},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "fetch_url",
+                "description": "Fetch and read the content of a web page. Returns extracted text content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "The URL to fetch"},
+                    },
+                    "required": ["url"],
+                },
+            },
+            {
+                "name": "run_python",
+                "description": "Execute Python code in a sandboxed environment. Use for calculations, data processing, testing code. Returns stdout and any errors.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string", "description": "Python code to execute"},
+                        "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)"},
+                    },
+                    "required": ["code"],
                 },
             },
             {
@@ -165,8 +210,18 @@ class Agent:
                 },
             },
             {
+                "name": "take_screenshot",
+                "description": "Capture a screenshot of the current screen.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "output_path": {"type": "string", "description": "Path to save screenshot (optional)"},
+                    },
+                },
+            },
+            {
                 "name": "remember",
-                "description": "Store a fact or information in long-term memory.",
+                "description": "Store a fact or information in long-term memory for future recall.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -201,7 +256,7 @@ class Agent:
             },
             {
                 "name": "report_complete",
-                "description": "Report that the task is complete with a final result/summary.",
+                "description": "Report that the task is complete with a final result/summary. Call this when you are done.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -211,6 +266,7 @@ class Agent:
                 },
             },
         ]
+        return tools
 
     def _get_system_prompt(self) -> str:
         type_instructions = {
@@ -223,23 +279,45 @@ class Agent:
             "general": "You are a versatile AI agent capable of handling any task.",
         }
 
+        plan_context = ""
+        if self.plan:
+            completed = [s for s in self.plan.get("steps", []) if s.get("status") == "completed"]
+            remaining = [s for s in self.plan.get("steps", []) if s.get("status") != "completed"]
+            plan_context = f"""
+CURRENT PLAN for goal: {self.plan.get('goal', self.task)}
+Completed steps: {len(completed)}/{len(self.plan.get('steps', []))}
+Remaining: {json.dumps([{'id': s['id'], 'desc': s['description']} for s in remaining[:5]], indent=2)}
+
+Follow this plan step by step. After completing each step, move to the next.
+"""
+
         return f"""You are {self.name}, an autonomous AI agent within JARVIS-OS.
 {type_instructions.get(self.agent_type, type_instructions['general'])}
-
+{plan_context}
 RULES:
-1. Think step-by-step before acting.
+1. Think step-by-step before acting. Explain your reasoning briefly.
 2. Use tools to interact with the system — do not guess or make up information.
-3. If you need to do multiple independent things, spawn sub-agents.
-4. When you have completed the task, call report_complete with your result.
-5. Be efficient — minimize unnecessary steps.
-6. If a step fails, analyze why and try an alternative approach.
-7. Never execute dangerous commands (rm -rf /, format, etc.) without explicit user confirmation.
+3. Execute one tool at a time, observe the result, then decide next action.
+4. If a step fails, analyze why and try an alternative approach before giving up.
+5. When you have completed the task, call report_complete with a clear summary.
+6. Be efficient — minimize unnecessary steps.
+7. For multi-step tasks, work through the plan systematically.
+8. Never execute dangerous commands (rm -rf /, format, etc.) without explicit user confirmation.
+9. When searching the web, use web_search first, then fetch_url on promising results.
+10. When writing code, use run_python to test it before delivering.
 
 You have full access to the system through your tools. Use them wisely."""
 
     async def execute_tool(self, tool_name: str, arguments: dict) -> str:
         """Execute a tool call and return the result."""
         try:
+            # Record action for history/undo
+            self.action_history.append({
+                "tool": tool_name,
+                "args": arguments,
+                "timestamp": datetime.now().isoformat(),
+            })
+
             if tool_name == "execute_shell":
                 result = await self.system_control.execute_command(**arguments)
             elif tool_name == "read_file":
@@ -258,18 +336,43 @@ You have full access to the system through your tools. Use them wisely."""
                 result = self.system_control.kill_process(**arguments)
             elif tool_name == "open_application":
                 result = await self.system_control.open_application(**arguments)
+            elif tool_name == "take_screenshot":
+                result = self.system_control.take_screenshot(**arguments)
             elif tool_name == "remember":
                 self.memory.store_fact(**arguments)
                 result = {"status": "success", "message": "Stored in memory"}
             elif tool_name == "recall":
                 result = self.memory.search_conversations(**arguments)
             elif tool_name == "spawn_agent":
-                # This will be handled by the agent manager
                 result = {"status": "spawned", "task": arguments.get("task")}
             elif tool_name == "report_complete":
                 self.result = arguments.get("result", "Task completed")
                 result = {"status": "complete"}
+            # Plugin-provided tools
+            elif tool_name in ("web_search", "fetch_url"):
+                if self.plugin_manager:
+                    result = await self.plugin_manager.execute_plugin_tool(
+                        "web_search", tool_name, arguments
+                    )
+                else:
+                    result = {"error": "Web search plugin not available"}
+            elif tool_name == "run_python":
+                if self.plugin_manager:
+                    result = await self.plugin_manager.execute_plugin_tool(
+                        "code_runner", tool_name, arguments
+                    )
+                else:
+                    result = {"error": "Code runner plugin not available"}
             else:
+                # Try plugin tools
+                if self.plugin_manager:
+                    for plugin_name, plugin in self.plugin_manager.plugins.items():
+                        for t in plugin.tools:
+                            if t["name"] == tool_name:
+                                result = await self.plugin_manager.execute_plugin_tool(
+                                    plugin_name, tool_name, arguments
+                                )
+                                return json.dumps(result, default=str)
                 result = {"error": f"Unknown tool: {tool_name}"}
 
             return json.dumps(result, default=str)
@@ -279,7 +382,8 @@ You have full access to the system through your tools. Use them wisely."""
 
     async def run(self, task: str, callback=None) -> dict:
         """
-        Main execution loop: Think -> Act -> Observe -> Repeat.
+        Main execution loop: Think → Act → Observe → Repeat.
+        With plan-driven execution and self-correction on failures.
         """
         self.task = task
         self.status = AgentStatus.RUNNING
@@ -292,6 +396,8 @@ You have full access to the system through your tools. Use them wisely."""
         logger.info(f"Agent {self.id} ({self.name}) starting task: {task[:100]}")
 
         try:
+            consecutive_failures = 0
+
             for step_num in range(self.max_steps):
                 if self._cancel_flag:
                     self.status = AgentStatus.CANCELLED
@@ -309,6 +415,7 @@ You have full access to the system through your tools. Use them wisely."""
                     "thought": response["content"],
                     "actions": [],
                     "timestamp": datetime.now().isoformat(),
+                    "status": "running",
                 }
 
                 # If there's text content, add it as assistant message
@@ -321,11 +428,27 @@ You have full access to the system through your tools. Use them wisely."""
                         action = {
                             "tool": tc["name"],
                             "arguments": tc["arguments"],
+                            "status": "running",
                         }
+
+                        # Broadcast that we're about to execute this tool
+                        step["current_action"] = f"Running {tc['name']}..."
 
                         # Execute the tool
                         tool_result = await self.execute_tool(tc["name"], tc["arguments"])
                         action["result"] = tool_result
+                        action["status"] = "completed"
+
+                        # Check for errors in tool result
+                        try:
+                            parsed = json.loads(tool_result)
+                            if isinstance(parsed, dict) and "error" in parsed:
+                                action["status"] = "error"
+                                consecutive_failures += 1
+                            else:
+                                consecutive_failures = 0
+                        except (json.JSONDecodeError, TypeError):
+                            consecutive_failures = 0
 
                         step["actions"].append(action)
 
@@ -337,6 +460,7 @@ You have full access to the system through your tools. Use them wisely."""
 
                         # Check if task was reported complete
                         if tc["name"] == "report_complete":
+                            step["status"] = "completed"
                             self.status = AgentStatus.COMPLETED
                             self.steps.append(step)
                             if callback:
@@ -346,8 +470,10 @@ You have full access to the system through your tools. Use them wisely."""
                                 "result": self.result,
                                 "steps": self.steps,
                                 "agent_id": self.id,
+                                "plan": self.plan,
                             }
 
+                step["status"] = "completed"
                 self.steps.append(step)
                 if callback:
                     await callback(self, step)
@@ -361,16 +487,33 @@ You have full access to the system through your tools. Use them wisely."""
                         "result": self.result,
                         "steps": self.steps,
                         "agent_id": self.id,
+                        "plan": self.plan,
                     }
+
+                # Self-correction: if too many consecutive failures, inject guidance
+                if consecutive_failures >= 3:
+                    self.messages.append({
+                        "role": "user",
+                        "content": "[System] Multiple tool calls have failed. Please reconsider your approach. Try a different tool or method. If the task cannot be completed, call report_complete with an explanation."
+                    })
+                    consecutive_failures = 0
+                    self.retry_count += 1
+
+                    if self.retry_count > self.max_retries:
+                        self.messages.append({
+                            "role": "user",
+                            "content": "[System] Maximum retries exceeded. Please summarize what you've accomplished so far and call report_complete."
+                        })
 
             # Max steps exceeded
             self.status = AgentStatus.FAILED
             self.error = "Max steps exceeded"
             return {
                 "status": "max_steps_exceeded",
-                "result": self.result,
+                "result": self.result or "Task exceeded maximum steps. Partial progress may have been made.",
                 "steps": self.steps,
                 "agent_id": self.id,
+                "plan": self.plan,
             }
 
         except Exception as e:
@@ -394,7 +537,9 @@ You have full access to the system through your tools. Use them wisely."""
             "type": self.agent_type,
             "status": self.status.value,
             "task": self.task,
+            "plan": self.plan,
             "steps_count": len(self.steps),
+            "steps": self.steps[-5:],  # Last 5 steps for UI
             "result": self.result,
             "error": self.error,
             "created_at": self.created_at.isoformat(),
