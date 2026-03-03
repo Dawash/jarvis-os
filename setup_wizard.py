@@ -115,16 +115,39 @@ def save_api_key(provider: str, api_key: str) -> dict:
     env = load_env()
 
     if provider == "openai":
+        if not api_key.startswith("sk-"):
+            return {"status": "error", "message": "OpenAI keys must start with sk-"}
         env["OPENAI_API_KEY"] = api_key
         os.environ["OPENAI_API_KEY"] = api_key
     elif provider == "anthropic":
+        if not api_key.startswith("sk-ant-"):
+            return {"status": "error", "message": "Anthropic keys must start with sk-ant-"}
         env["ANTHROPIC_API_KEY"] = api_key
         os.environ["ANTHROPIC_API_KEY"] = api_key
     else:
         return {"status": "error", "message": f"Unknown provider: {provider}"}
 
     save_env(env)
-    return {"status": "success", "message": f"{provider} API key saved"}
+    return {"status": "success", "message": f"{provider.title()} API key saved successfully"}
+
+
+def get_masked_keys() -> dict:
+    """Return masked versions of configured API keys for display."""
+    env = load_env()
+    openai_key = env.get("OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+    anthropic_key = env.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+
+    def mask(key: str) -> str:
+        if not key or key.startswith("sk-your") or key.startswith("sk-ant-your"):
+            return ""
+        if len(key) > 12:
+            return key[:6] + "..." + key[-4:]
+        return "***"
+
+    return {
+        "openai": mask(openai_key),
+        "anthropic": mask(anthropic_key),
+    }
 
 
 def get_configured_providers() -> dict:

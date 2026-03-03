@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from core.kernel import get_kernel
-from setup_wizard import save_api_key, get_configured_providers
+from setup_wizard import save_api_key, get_configured_providers, get_masked_keys
 
 router = APIRouter(prefix="/api")
 
@@ -287,6 +287,16 @@ async def speak(text: str = Form(...)):
 async def setup_status():
     """Check if API keys are configured — used by dashboard first-boot."""
     return get_configured_providers()
+
+@router.get("/setup/keys")
+async def get_keys():
+    """Return masked API keys for display in Settings."""
+    providers = get_configured_providers()
+    masked = get_masked_keys()
+    return {
+        "openai": {"active": providers["openai"], "masked": masked["openai"]},
+        "anthropic": {"active": providers["anthropic"], "masked": masked["anthropic"]},
+    }
 
 @router.post("/setup/apikey")
 async def set_api_key(req: ApiKeyRequest):

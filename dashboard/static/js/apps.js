@@ -588,9 +588,37 @@ function openSettings() {
         title: 'SETTINGS',
         icon: '&#9881;',
         width: 650,
-        height: 500,
+        height: 600,
         content: `
             <div style="padding:20px;height:100%;overflow-y:auto">
+                <div class="sidebar-section" style="margin-bottom:16px">
+                    <div class="section-title">API Keys</div>
+
+                    <div style="margin-bottom:14px">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                            <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-dim)">OpenAI API Key</label>
+                            <span id="set-openai-status" style="font-family:var(--font-mono);font-size:10px;padding:2px 8px;border-radius:4px;background:var(--bg-card)">--</span>
+                        </div>
+                        <div style="display:flex;gap:8px">
+                            <input type="password" id="set-openai-key" placeholder="sk-..." style="flex:1;padding:8px;background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);border-radius:6px;font-family:var(--font-mono);font-size:12px">
+                            <button class="quick-btn" onclick="saveSettingsKey('openai')" style="white-space:nowrap;padding:8px 14px">Save</button>
+                        </div>
+                        <div id="set-openai-msg" style="font-family:var(--font-mono);font-size:10px;margin-top:4px;min-height:14px"></div>
+                    </div>
+
+                    <div style="margin-bottom:6px">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                            <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-dim)">Anthropic API Key</label>
+                            <span id="set-anthropic-status" style="font-family:var(--font-mono);font-size:10px;padding:2px 8px;border-radius:4px;background:var(--bg-card)">--</span>
+                        </div>
+                        <div style="display:flex;gap:8px">
+                            <input type="password" id="set-anthropic-key" placeholder="sk-ant-..." style="flex:1;padding:8px;background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);border-radius:6px;font-family:var(--font-mono);font-size:12px">
+                            <button class="quick-btn" onclick="saveSettingsKey('anthropic')" style="white-space:nowrap;padding:8px 14px">Save</button>
+                        </div>
+                        <div id="set-anthropic-msg" style="font-family:var(--font-mono);font-size:10px;margin-top:4px;min-height:14px"></div>
+                    </div>
+                </div>
+
                 <div class="sidebar-section" style="margin-bottom:16px">
                     <div class="section-title">LLM Provider</div>
                     <select id="set-provider" style="width:100%;padding:8px;background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);border-radius:6px;font-family:var(--font-mono)">
@@ -622,8 +650,81 @@ function openSettings() {
                     <button class="quick-btn" style="width:100%;color:var(--danger);border-color:rgba(255,59,48,0.3)" onclick="if(confirm('Shutdown JARVIS-OS?')) fetch('/api/system/shutdown',{method:'POST'})">Shutdown</button>
                 </div>
             </div>
-        `
+        `,
+        onReady: () => { loadSettingsKeys(); }
     });
+}
+
+async function loadSettingsKeys() {
+    try {
+        const res = await fetch('/api/setup/keys');
+        const data = await res.json();
+
+        const oaiStatus = document.getElementById('set-openai-status');
+        const antStatus = document.getElementById('set-anthropic-status');
+
+        if (oaiStatus) {
+            if (data.openai?.active) {
+                oaiStatus.textContent = 'Active (' + data.openai.masked + ')';
+                oaiStatus.style.color = 'var(--success)';
+                oaiStatus.style.borderColor = 'var(--success)';
+            } else {
+                oaiStatus.textContent = 'Not configured';
+                oaiStatus.style.color = 'var(--text-dim)';
+            }
+        }
+        if (antStatus) {
+            if (data.anthropic?.active) {
+                antStatus.textContent = 'Active (' + data.anthropic.masked + ')';
+                antStatus.style.color = 'var(--success)';
+                antStatus.style.borderColor = 'var(--success)';
+            } else {
+                antStatus.textContent = 'Not configured';
+                antStatus.style.color = 'var(--text-dim)';
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load key status:', e);
+    }
+}
+
+async function saveSettingsKey(provider) {
+    const input = document.getElementById(`set-${provider}-key`);
+    const msgEl = document.getElementById(`set-${provider}-msg`);
+    if (!input || !msgEl) return;
+
+    const apiKey = input.value.trim();
+    if (!apiKey) {
+        msgEl.textContent = 'Please enter an API key';
+        msgEl.style.color = 'var(--danger)';
+        return;
+    }
+
+    msgEl.textContent = 'Saving...';
+    msgEl.style.color = 'var(--text-dim)';
+
+    try {
+        const res = await fetch('/api/setup/apikey', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider, api_key: apiKey }),
+        });
+        const data = await res.json();
+
+        if (data.status === 'success') {
+            msgEl.textContent = data.message;
+            msgEl.style.color = 'var(--success)';
+            input.value = '';
+            addNotification(`${provider.charAt(0).toUpperCase() + provider.slice(1)} API key saved`, 'success');
+            loadSettingsKeys();
+        } else {
+            msgEl.textContent = data.message || 'Failed to save key';
+            msgEl.style.color = 'var(--danger)';
+        }
+    } catch (e) {
+        msgEl.textContent = 'Connection error: ' + e.message;
+        msgEl.style.color = 'var(--danger)';
+    }
 }
 
 /* ── Browser ─────────────────────────────────────────────────── */
