@@ -1,0 +1,72 @@
+# ╔══════════════════════════════════════════════════════╗
+# ║            JARVIS-OS Configuration                   ║
+# ╚══════════════════════════════════════════════════════╝
+
+system:
+  name: "JARVIS-OS"
+  version: "1.0.0"
+  codename: "ARC REACTOR"
+  log_level: "INFO"
+  data_dir: "./data"
+  memory_dir: "./memory"
+  log_dir: "./logs"
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  ws_port: 8001
+  reload: true
+
+llm:
+  default_provider: "openai"    # openai | anthropic
+  openai:
+    model: "gpt-4o"
+    api_key: "${OPENAI_API_KEY}"
+    max_tokens: 4096
+    temperature: 0.7
+  anthropic:
+    model: "claude-sonnet-4-20250514"
+    api_key: "${ANTHROPIC_API_KEY}"
+    max_tokens: 4096
+    temperature: 0.7
+
+voice:
+  enabled: true
+  wake_word: "jarvis"
+  stt_engine: "google"          # google | whisper
+  tts_engine: "pyttsx3"         # pyttsx3 | elevenlabs
+  tts_rate: 180
+  tts_voice: "english"
+  silence_threshold: 500
+  listen_timeout: 10
+
+agents:
+  max_concurrent: 10
+  default_timeout: 300
+  types:
+    - name: "system"
+      description: "System operations - files, processes, network"
+    - name: "research"
+      description: "Web research and information gathering"
+    - name: "code"
+      description: "Code generation, analysis, debugging"
+    - name: "creative"
+      description: "Content creation, writing, design"
+    - name: "data"
+      description: "Data analysis, visualization, processing"
+    - name: "automation"
+      description: "Task automation and scheduling"
+
+dashboard:
+  theme: "jarvis"
+  accent_color: "#00d4ff"
+  secondary_color: "#0a84ff"
+  danger_color: "#ff3b30"
+  success_color: "#30d158"
+  background: "#0a0e17"
+  panel_bg: "rgba(10, 20, 40, 0.85)"
+
+plugins:
+  auto_discover: true
+  plugin_dir: "./plugins"
+  sandboxed: true

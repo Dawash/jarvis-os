@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS-OS</title>
+    <link rel="stylesheet" href="/static/css/jarvis.css">
+    <link rel="stylesheet" href="/static/css/desktop.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='none' stroke='%2300d4ff' stroke-width='4'/><circle cx='50' cy='50' r='15' fill='%2300d4ff'/></svg>">
+</head>
+<body>
+    <!-- Animated Background -->
+    <canvas id="bg-canvas"></canvas>
+    <div class="grid-overlay"></div>
+    <div class="scan-line"></div>
+
+    <!-- ═══ BOOT SCREEN ═══ -->
+    <div class="boot-screen" id="boot-screen">
+        <div class="boot-reactor">
+            <div class="boot-ring ring-1"></div>
+            <div class="boot-ring ring-2"></div>
+            <div class="boot-ring ring-3"></div>
+            <div class="boot-core"></div>
+        </div>
+        <div class="boot-title">JARVIS-OS</div>
+        <div class="boot-subtitle">AI OPERATING SYSTEM</div>
+        <div class="boot-log" id="boot-log">
+            <div class="boot-line">Initializing kernel...</div>
+        </div>
+        <div class="boot-progress">
+            <div class="boot-progress-bar" id="boot-progress-bar"></div>
+        </div>
+    </div>
+
+    <!-- ═══ DESKTOP ENVIRONMENT ═══ -->
+    <div class="desktop-env" id="desktop-env" style="display:none">
+
+        <!-- ─── Top Bar (System Bar) ─── -->
+        <div class="system-bar">
+            <div class="sysbar-left">
+                <div class="sysbar-reactor" id="sysbar-reactor"></div>
+                <span class="sysbar-name">JARVIS-OS</span>
+                <div class="sysbar-separator"></div>
+                <button class="sysbar-btn" id="btn-activities" title="Activities">Activities</button>
+            </div>
+            <div class="sysbar-center">
+                <span class="sysbar-time" id="sysbar-time">00:00:00</span>
+                <span class="sysbar-date" id="sysbar-date">Monday, Jan 01</span>
+            </div>
+            <div class="sysbar-right">
+                <div class="sysbar-metrics">
+                    <span class="sysbar-metric" title="CPU"><span class="metric-icon">&#9881;</span> <span id="top-cpu">0%</span></span>
+                    <span class="sysbar-metric" title="Memory"><span class="metric-icon">&#9638;</span> <span id="top-mem">0%</span></span>
+                    <span class="sysbar-metric" title="Active Agents"><span class="metric-icon">&#9670;</span> <span id="top-agents">0</span></span>
+                </div>
+                <button class="sysbar-btn sysbar-icon-btn" id="btn-voice-global" title="Voice Control">&#127908;</button>
+                <button class="sysbar-btn sysbar-icon-btn" id="btn-notifications" title="Notifications">&#128276; <span class="notif-badge" id="notif-badge" style="display:none">0</span></button>
+                <div class="sysbar-status">
+                    <div class="status-dot-small" id="global-status-dot"></div>
+                    <span id="global-status">ONLINE</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ─── Desktop Area (windows live here) ─── -->
+        <div class="desktop-area" id="desktop-area">
+            <!-- Desktop Icons -->
+            <div class="desktop-icons" id="desktop-icons">
+                <div class="desktop-icon" ondblclick="openApp('terminal')">
+                    <div class="icon-img">&#9000;</div>
+                    <div class="icon-label">Terminal</div>
+                </div>
+                <div class="desktop-icon" ondblclick="openApp('files')">
+                    <div class="icon-img">&#128193;</div>
+                    <div class="icon-label">Files</div>
+                </div>
+                <div class="desktop-icon" ondblclick="openApp('monitor')">
+                    <div class="icon-img">&#128200;</div>
+                    <div class="icon-label">System Monitor</div>
+                </div>
+                <div class="desktop-icon" ondblclick="openApp('agents')">
+                    <div class="icon-img">&#129302;</div>
+                    <div class="icon-label">Agent Hub</div>
+                </div>
+                <div class="desktop-icon" ondblclick="openApp('memory')">
+                    <div class="icon-img">&#129504;</div>
+                    <div class="icon-label">Memory</div>
+                </div>
+                <div class="desktop-icon" ondblclick="openApp('plugins')">
+                    <div class="icon-img">&#128268;</div>
+                    <div class="icon-label">Plugins</div>
+                </div>
+                <div class="desktop-icon" ondblclick="openApp('settings')">
+                    <div class="icon-img">&#9881;</div>
+                    <div class="icon-label">Settings</div>
+                </div>
+                <div class="desktop-icon" ondblclick="openApp('browser')">
+                    <div class="icon-img">&#127760;</div>
+                    <div class="icon-label">Browser</div>
+                </div>
+            </div>
+
+            <!-- Windows Container -->
+            <div class="windows-container" id="windows-container"></div>
+        </div>
+
+        <!-- ─── Dock / Taskbar ─── -->
+        <div class="dock" id="dock">
+            <div class="dock-apps">
+                <button class="dock-item active" onclick="openApp('assistant')" title="JARVIS Assistant">
+                    <div class="dock-icon reactor-icon"></div>
+                    <span class="dock-label">JARVIS</span>
+                    <div class="dock-indicator"></div>
+                </button>
+                <button class="dock-item" onclick="openApp('terminal')" title="Terminal" id="dock-terminal">
+                    <div class="dock-icon">&#9000;</div>
+                    <span class="dock-label">Terminal</span>
+                </button>
+                <button class="dock-item" onclick="openApp('files')" title="Files" id="dock-files">
+                    <div class="dock-icon">&#128193;</div>
+                    <span class="dock-label">Files</span>
+                </button>
+                <button class="dock-item" onclick="openApp('monitor')" title="System Monitor" id="dock-monitor">
+                    <div class="dock-icon">&#128200;</div>
+                    <span class="dock-label">Monitor</span>
+                </button>
+                <button class="dock-item" onclick="openApp('agents')" title="Agent Hub" id="dock-agents">
+                    <div class="dock-icon">&#129302;</div>
+                    <span class="dock-label">Agents</span>
+                </button>
+            </div>
+            <div class="dock-separator"></div>
+            <div class="dock-tray">
+                <div class="dock-tray-item" id="dock-voice" onclick="toggleVoice()">
+                    <span>&#127908;</span>
+                </div>
+                <div class="dock-tray-item" id="dock-uptime">
+                    <span id="dock-uptime-val">00:00</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ─── Notification Panel ─── -->
+        <div class="notification-panel" id="notification-panel">
+            <div class="notif-header">
+                <span>Notifications</span>
+                <button class="notif-clear" onclick="clearNotifications()">Clear All</button>
+            </div>
+            <div class="notif-list" id="notif-list"></div>
+        </div>
+
+        <!-- ─── Voice Overlay ─── -->
+        <div class="voice-overlay" id="voice-overlay">
+            <div class="voice-circle">
+                <div class="voice-ring"></div>
+                <div class="voice-ring ring-2"></div>
+                <div class="voice-core-icon">&#127908;</div>
+            </div>
+            <div class="voice-status" id="voice-status-text">Listening...</div>
+            <div class="voice-transcript" id="voice-transcript"></div>
+            <button class="voice-close" onclick="closeVoiceOverlay()">Cancel</button>
+        </div>
+
+    </div>
+
+    <script src="/static/js/background.js"></script>
+    <script src="/static/js/windows.js"></script>
+    <script src="/static/js/apps.js"></script>
+    <script src="/static/js/jarvis.js"></script>
+</body>
+</html>
