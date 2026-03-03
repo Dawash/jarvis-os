@@ -1,5 +1,6 @@
 """
 JARVIS-OS WebSocket Manager — Real-time bidirectional communication.
+Handles streaming agent progress, task plans, and tool execution updates.
 """
 
 import asyncio
@@ -68,7 +69,6 @@ class WebSocketManager:
             source = data.get("source", "dashboard")
 
             if self.kernel:
-                # Process command asynchronously
                 asyncio.create_task(self._process_command(ws, command, source))
 
         elif msg_type == "voice_command":
@@ -76,19 +76,40 @@ class WebSocketManager:
             if self.kernel:
                 asyncio.create_task(self._process_command(ws, command, "voice"))
 
+        elif msg_type == "cancel_agent":
+            agent_id = data.get("agent_id")
+            if self.kernel and agent_id:
+                am = self.kernel.subsystems.get("agents")
+                if am:
+                    am.cancel_agent(agent_id)
+                    await self.send_to(ws, {
+                        "type": "agent_cancelled",
+                        "agent_id": agent_id,
+                    })
+
         elif msg_type == "ping":
             await self.send_to(ws, {"type": "pong"})
 
     async def _process_command(self, ws: WebSocket, command: str, source: str):
         """Process a command and send the result back."""
         try:
+            # Send acknowledgment that processing has started
+            await self.send_to(ws, {
+                "type": "command_accepted",
+                "command": command,
+                "status": "processing",
+            })
+
             result = await self.kernel.process_command(command, source)
+
             await self.send_to(ws, {
                 "type": "command_result",
                 "result": result.get("result", ""),
                 "error": result.get("error"),
                 "status": result.get("status"),
                 "agent_id": result.get("agent_id"),
+                "plan": result.get("plan"),
+                "steps_taken": len(result.get("steps", [])) if "steps" in result else 0,
             })
         except Exception as e:
             await self.send_to(ws, {
