@@ -33,10 +33,10 @@ llm:
 voice:
   enabled: true
   wake_word: "jarvis"
-  stt_engine: "google"          # google | whisper
-  tts_engine: "pyttsx3"         # pyttsx3 | elevenlabs
+  stt_engine: "google"              # google | whisper
+  tts_engine: "edge-tts"            # edge-tts | pyttsx3
+  tts_voice: "en-US-GuyNeural"      # edge-tts voice (see: edge-tts --list-voices)
   tts_rate: 180
-  tts_voice: "english"
   silence_threshold: 500
   listen_timeout: 10
 

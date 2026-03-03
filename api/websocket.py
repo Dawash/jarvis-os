@@ -76,6 +76,16 @@ class WebSocketManager:
             if self.kernel:
                 asyncio.create_task(self._process_command(ws, command, "voice"))
 
+        elif msg_type == "barge_in":
+            # User wants to interrupt TTS
+            if self.kernel:
+                ve = self.kernel.subsystems.get("voice")
+                if ve:
+                    ve.barge_in()
+                    await self.send_to(ws, {"type": "barge_in_ack"})
+                # Also stop browser-side speech synthesis
+                await self.broadcast({"type": "stop_speaking"})
+
         elif msg_type == "cancel_agent":
             agent_id = data.get("agent_id")
             if self.kernel and agent_id:

@@ -16,6 +16,7 @@ anthropic>=0.40.0
 # Voice
 SpeechRecognition>=3.11.0
 pyttsx3>=2.98
+edge-tts>=6.1.0
 sounddevice>=0.5.0
 numpy>=2.1.0
 scipy>=1.14.0

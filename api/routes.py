@@ -281,6 +281,16 @@ async def speak(text: str = Form(...)):
         return {"status": "speaking"}
     return {"error": "Voice engine not available"}
 
+@router.post("/voice/barge-in")
+async def voice_barge_in():
+    """Interrupt TTS immediately (barge-in)."""
+    kernel = get_kernel()
+    ve = kernel.subsystems.get("voice")
+    if ve:
+        ve.barge_in()
+        return {"status": "interrupted", "was_speaking": ve.is_speaking}
+    return {"error": "Voice engine not available"}
+
 
 # ── Setup / API Keys ────────────────────────────────────────────
 @router.get("/setup/status")

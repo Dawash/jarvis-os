@@ -298,12 +298,29 @@ function handleWSMessage(data) {
             break;
 
         case 'speak':
+            window._jarvisSpeaking = true;
             if ('speechSynthesis' in window) {
                 const utter = new SpeechSynthesisUtterance(data.text);
                 utter.rate = 1.0;
                 utter.pitch = 0.9;
+                utter.onend = () => { window._jarvisSpeaking = false; };
                 speechSynthesis.speak(utter);
             }
+            break;
+
+        case 'stop_speaking':
+            // Server-side barge-in — stop browser TTS too
+            if ('speechSynthesis' in window) {
+                speechSynthesis.cancel();
+            }
+            window._jarvisSpeaking = false;
+            break;
+
+        case 'barge_in_ack':
+            if ('speechSynthesis' in window) {
+                speechSynthesis.cancel();
+            }
+            window._jarvisSpeaking = false;
             break;
 
         case 'notification':
@@ -508,6 +525,29 @@ function cancelActiveTask(agentId) {
     }
 }
 
+// ── Barge-In (Interrupt TTS) ────────────────────────────────────
+window._jarvisSpeaking = false;
+
+function bargeIn() {
+    // Stop browser-side TTS immediately
+    if ('speechSynthesis' in window) {
+        speechSynthesis.cancel();
+    }
+    window._jarvisSpeaking = false;
+
+    // Tell the server to stop server-side TTS
+    if (window.jarvisWS && window.jarvisWS.readyState === WebSocket.OPEN) {
+        window.jarvisWS.send(JSON.stringify({ type: 'barge_in' }));
+    }
+}
+
+// Auto barge-in when user starts typing while JARVIS is speaking
+document.addEventListener('keydown', (e) => {
+    if (window._jarvisSpeaking && !e.ctrlKey && !e.altKey && !e.metaKey && e.key.length === 1) {
+        bargeIn();
+    }
+});
+
 // ── Clock ───────────────────────────────────────────────────────
 function updateClock() {
     const now = new Date();
@@ -618,6 +658,11 @@ function toggleVoice() {
 }
 
 function openVoiceOverlay() {
+    // Barge-in: interrupt JARVIS if currently speaking
+    if (window._jarvisSpeaking) {
+        bargeIn();
+    }
+
     const overlay = document.getElementById('voice-overlay');
     overlay.classList.add('active');
     isVoiceActive = true;
@@ -709,8 +754,9 @@ function setupShortcuts() {
             e.preventDefault();
             openFiles();
         }
-        // Escape — close voice overlay
+        // Escape — barge-in (stop TTS) + close voice overlay
         if (e.key === 'Escape') {
+            if (window._jarvisSpeaking) bargeIn();
             if (isVoiceActive) closeVoiceOverlay();
             const notifPanel = document.getElementById('notification-panel');
             if (notifPanel.classList.contains('open')) notifPanel.classList.remove('open');
