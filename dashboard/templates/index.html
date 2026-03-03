@@ -9,12 +9,11 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='none' stroke='%2300d4ff' stroke-width='4'/><circle cx='50' cy='50' r='15' fill='%2300d4ff'/></svg>">
 </head>
 <body>
-    <!-- Animated Background -->
     <canvas id="bg-canvas"></canvas>
     <div class="grid-overlay"></div>
     <div class="scan-line"></div>
 
-    <!-- ═══ BOOT SCREEN ═══ -->
+    <!-- BOOT SCREEN -->
     <div class="boot-screen" id="boot-screen">
         <div class="boot-reactor">
             <div class="boot-ring ring-1"></div>
@@ -23,7 +22,7 @@
             <div class="boot-core"></div>
         </div>
         <div class="boot-title">JARVIS-OS</div>
-        <div class="boot-subtitle">AI OPERATING SYSTEM</div>
+        <div class="boot-subtitle">AI OPERATING SYSTEM v2.0</div>
         <div class="boot-log" id="boot-log">
             <div class="boot-line">Initializing kernel...</div>
         </div>
@@ -32,10 +31,9 @@
         </div>
     </div>
 
-    <!-- ═══ DESKTOP ENVIRONMENT ═══ -->
+    <!-- DESKTOP ENVIRONMENT -->
     <div class="desktop-env" id="desktop-env" style="display:none">
-
-        <!-- ─── Top Bar (System Bar) ─── -->
+        <!-- Top Bar -->
         <div class="system-bar">
             <div class="sysbar-left">
                 <div class="sysbar-reactor" id="sysbar-reactor"></div>
@@ -62,9 +60,8 @@
             </div>
         </div>
 
-        <!-- ─── Desktop Area (windows live here) ─── -->
+        <!-- Desktop Area -->
         <div class="desktop-area" id="desktop-area">
-            <!-- Desktop Icons -->
             <div class="desktop-icons" id="desktop-icons">
                 <div class="desktop-icon" ondblclick="openApp('terminal')">
                     <div class="icon-img">&#9000;</div>
@@ -86,6 +83,18 @@
                     <div class="icon-img">&#129504;</div>
                     <div class="icon-label">Memory</div>
                 </div>
+                <div class="desktop-icon" ondblclick="openApp('goals')">
+                    <div class="icon-img">&#127919;</div>
+                    <div class="icon-label">Goals</div>
+                </div>
+                <div class="desktop-icon" ondblclick="openApp('reminders')">
+                    <div class="icon-img">&#9200;</div>
+                    <div class="icon-label">Reminders</div>
+                </div>
+                <div class="desktop-icon" ondblclick="openApp('contacts')">
+                    <div class="icon-img">&#128101;</div>
+                    <div class="icon-label">Contacts</div>
+                </div>
                 <div class="desktop-icon" ondblclick="openApp('plugins')">
                     <div class="icon-img">&#128268;</div>
                     <div class="icon-label">Plugins</div>
@@ -99,12 +108,10 @@
                     <div class="icon-label">Browser</div>
                 </div>
             </div>
-
-            <!-- Windows Container -->
             <div class="windows-container" id="windows-container"></div>
         </div>
 
-        <!-- ─── Dock / Taskbar ─── -->
+        <!-- Dock -->
         <div class="dock" id="dock">
             <div class="dock-apps">
                 <button class="dock-item active" onclick="openApp('assistant')" title="JARVIS Assistant">
@@ -128,6 +135,10 @@
                     <div class="dock-icon">&#129302;</div>
                     <span class="dock-label">Agents</span>
                 </button>
+                <button class="dock-item" onclick="openApp('goals')" title="Goals" id="dock-goals">
+                    <div class="dock-icon">&#127919;</div>
+                    <span class="dock-label">Goals</span>
+                </button>
             </div>
             <div class="dock-separator"></div>
             <div class="dock-tray">
@@ -140,7 +151,7 @@
             </div>
         </div>
 
-        <!-- ─── Notification Panel ─── -->
+        <!-- Notification Panel -->
         <div class="notification-panel" id="notification-panel">
             <div class="notif-header">
                 <span>Notifications</span>
@@ -149,7 +160,7 @@
             <div class="notif-list" id="notif-list"></div>
         </div>
 
-        <!-- ─── Voice Overlay ─── -->
+        <!-- Voice Overlay -->
         <div class="voice-overlay" id="voice-overlay">
             <div class="voice-circle">
                 <div class="voice-ring"></div>
@@ -160,7 +171,6 @@
             <div class="voice-transcript" id="voice-transcript"></div>
             <button class="voice-close" onclick="closeVoiceOverlay()">Cancel</button>
         </div>
-
     </div>
 
     <script src="/static/js/background.js"></script>

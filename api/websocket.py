@@ -1,6 +1,7 @@
 """
 JARVIS-OS WebSocket Manager — Real-time bidirectional communication.
-Handles streaming agent progress, task plans, and tool execution updates.
+Handles streaming agent progress, task plans, tool execution updates,
+barge-in, reminders, and dialogue state.
 """
 
 import asyncio
@@ -22,6 +23,8 @@ class WebSocketManager:
 
     async def initialize(self, kernel):
         self.kernel = kernel
+        # Start reminder checker
+        asyncio.create_task(self._reminder_checker())
 
     async def shutdown(self):
         for ws in list(self.connections):
@@ -41,7 +44,6 @@ class WebSocketManager:
         logger.info(f"WebSocket disconnected — {len(self.connections)} total")
 
     async def broadcast(self, data: dict):
-        """Broadcast a message to all connected clients."""
         if not self.connections:
             return
         message = json.dumps(data, default=str)
@@ -54,20 +56,17 @@ class WebSocketManager:
         self.connections -= dead
 
     async def send_to(self, ws: WebSocket, data: dict):
-        """Send a message to a specific client."""
         try:
             await ws.send_text(json.dumps(data, default=str))
         except Exception:
             self.connections.discard(ws)
 
     async def handle_message(self, ws: WebSocket, data: dict):
-        """Handle an incoming WebSocket message from a client."""
         msg_type = data.get("type")
 
         if msg_type == "command":
             command = data.get("command", "")
             source = data.get("source", "dashboard")
-
             if self.kernel:
                 asyncio.create_task(self._process_command(ws, command, source))
 
@@ -77,13 +76,11 @@ class WebSocketManager:
                 asyncio.create_task(self._process_command(ws, command, "voice"))
 
         elif msg_type == "barge_in":
-            # User wants to interrupt TTS
             if self.kernel:
                 ve = self.kernel.subsystems.get("voice")
                 if ve:
                     ve.barge_in()
                     await self.send_to(ws, {"type": "barge_in_ack"})
-                # Also stop browser-side speech synthesis
                 await self.broadcast({"type": "stop_speaking"})
 
         elif msg_type == "cancel_agent":
@@ -92,18 +89,26 @@ class WebSocketManager:
                 am = self.kernel.subsystems.get("agents")
                 if am:
                     am.cancel_agent(agent_id)
-                    await self.send_to(ws, {
-                        "type": "agent_cancelled",
-                        "agent_id": agent_id,
-                    })
+                    await self.send_to(ws, {"type": "agent_cancelled", "agent_id": agent_id})
+
+        elif msg_type == "undo":
+            if self.kernel:
+                ah = self.kernel.subsystems.get("action_history")
+                if ah:
+                    result = await ah.undo_last()
+                    await self.send_to(ws, {"type": "undo_result", **result})
+
+        elif msg_type == "get_briefing":
+            if self.kernel:
+                gm = self.kernel.subsystems.get("goals")
+                if gm:
+                    await self.send_to(ws, {"type": "briefing", "text": gm.generate_briefing()})
 
         elif msg_type == "ping":
             await self.send_to(ws, {"type": "pong"})
 
     async def _process_command(self, ws: WebSocket, command: str, source: str):
-        """Process a command and send the result back."""
         try:
-            # Send acknowledgment that processing has started
             await self.send_to(ws, {
                 "type": "command_accepted",
                 "command": command,
@@ -111,6 +116,13 @@ class WebSocketManager:
             })
 
             result = await self.kernel.process_command(command, source)
+
+            # Handle special actions
+            if result.get("action") == "undo":
+                ah = self.kernel.subsystems.get("action_history")
+                if ah:
+                    undo_result = await ah.undo_last()
+                    result["result"] = undo_result.get("message", "Nothing to undo")
 
             await self.send_to(ws, {
                 "type": "command_result",
@@ -127,3 +139,27 @@ class WebSocketManager:
                 "error": str(e),
                 "status": "error",
             })
+
+    async def _reminder_checker(self):
+        """Periodically check for due reminders and broadcast them."""
+        while True:
+            try:
+                await asyncio.sleep(30)  # Check every 30 seconds
+                if not self.kernel:
+                    continue
+                pm = self.kernel.subsystems.get("plugins")
+                if not pm or "reminders" not in pm.plugins:
+                    continue
+                module = pm.plugins["reminders"].get("module")
+                if not module or not hasattr(module, "get_due_reminders"):
+                    continue
+                due = module.get_due_reminders()
+                for reminder in due:
+                    await self.broadcast({
+                        "type": "reminder",
+                        "message": reminder.get("message", ""),
+                        "id": reminder.get("id", ""),
+                        "time": reminder.get("time", ""),
+                    })
+            except Exception:
+                pass

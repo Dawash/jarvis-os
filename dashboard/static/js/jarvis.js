@@ -326,6 +326,20 @@ function handleWSMessage(data) {
         case 'notification':
             addNotification(data.message, data.level || 'info');
             break;
+
+        case 'reminder':
+            addNotification(`Reminder: ${data.message}`, 'warning');
+            addChatMessage('system', `Reminder: ${data.message}`);
+            break;
+
+        case 'undo_result':
+            addChatMessage('system', data.message || 'Undo completed');
+            addNotification(data.message || 'Action undone', data.status === 'success' ? 'success' : 'warning');
+            break;
+
+        case 'briefing':
+            addChatMessage('jarvis', data.text);
+            break;
     }
 }
 
@@ -543,6 +557,10 @@ function bargeIn() {
 
 // Auto barge-in when user starts typing while JARVIS is speaking
 document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        bargeIn();
+        return;
+    }
     if (window._jarvisSpeaking && !e.ctrlKey && !e.altKey && !e.metaKey && e.key.length === 1) {
         bargeIn();
     }

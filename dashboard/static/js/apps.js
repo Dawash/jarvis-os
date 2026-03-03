@@ -542,6 +542,7 @@ function openPlugins() {
             <div style="padding:16px;height:100%;overflow-y:auto">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
                     <span style="font-family:var(--font-display);font-size:14px;letter-spacing:2px;color:var(--primary)">INSTALLED PLUGINS</span>
+                    <button class="btn-spawn" onclick="installPluginDialog()" style="margin-right:8px">Install from Git</button>
                     <button class="btn-spawn" onclick="discoverPlugins()">Scan for Plugins</button>
                 </div>
                 <div id="plugins-list">
@@ -560,15 +561,16 @@ async function loadPlugins() {
         const list = document.getElementById('plugins-list');
         if (!list) return;
         if (plugins.length === 0) {
-            list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);font-family:var(--font-mono)">No plugins installed. JARVIS can create new plugins to expand its capabilities.</div>';
+            list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);font-family:var(--font-mono)">No plugins installed.</div>';
             return;
         }
         list.innerHTML = plugins.map(p => `
             <div class="agent-card">
                 <div class="agent-avatar">&#128268;</div>
                 <div class="agent-info">
-                    <div class="agent-card-name">${escapeHTML(p.name)}</div>
+                    <div class="agent-card-name">${escapeHTML(p.name)} <span style="font-size:10px;color:var(--text-dim)">v${p.version || '?'}</span></div>
                     <div class="agent-card-task">${escapeHTML(p.description || '')}</div>
+                    ${p.tools && p.tools.length ? `<div style="margin-top:4px;font-size:10px;color:var(--primary)">${p.tools.join(', ')}</div>` : ''}
                 </div>
                 <span class="agent-card-status ${p.enabled ? 'running' : 'completed'}">${p.enabled ? 'ACTIVE' : 'DISABLED'}</span>
             </div>
@@ -577,6 +579,31 @@ async function loadPlugins() {
         const list = document.getElementById('plugins-list');
         if (list) list.innerHTML = `<div style="color:var(--danger)">${err.message}</div>`;
     }
+}
+
+async function discoverPlugins() {
+    try {
+        await fetch('/api/plugins/discover', { method: 'POST' });
+        loadPlugins();
+        addNotification('Plugins rescanned', 'success');
+    } catch (err) { console.error(err); }
+}
+
+function installPluginDialog() {
+    const url = prompt('Git URL for plugin repository:');
+    if (!url) return;
+    fetch('/api/plugins/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'success') {
+            addNotification(`Installed: ${data.installed.join(', ')}`, 'success');
+            loadPlugins();
+        } else {
+            addNotification(`Install failed: ${data.message}`, 'error');
+        }
+    });
 }
 
 /* ── Settings ────────────────────────────────────────────────── */
@@ -759,6 +786,197 @@ function browserGo() {
     if (url && frame) frame.src = url;
 }
 
+/* ── Goals ───────────────────────────────────────────────────── */
+function openGoals() {
+    if (wm.isOpen('goals')) { wm.focusWindow('goals'); return; }
+    wm.createWindow({
+        id: 'goals',
+        title: 'GOALS',
+        icon: '&#127919;',
+        width: 750,
+        height: 550,
+        content: `
+            <div style="padding:16px;height:100%;overflow-y:auto">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <span style="font-family:var(--font-display);font-size:14px;letter-spacing:2px;color:var(--primary)">ACTIVE GOALS</span>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn-spawn" onclick="getBriefing()">Briefing</button>
+                        <button class="btn-spawn" onclick="createGoalDialog()">+ New Goal</button>
+                    </div>
+                </div>
+                <div id="goals-briefing" style="display:none;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);margin-bottom:16px;font-family:var(--font-mono);font-size:12px;color:var(--text-secondary);white-space:pre-wrap"></div>
+                <div id="goals-list">
+                    <div style="text-align:center;padding:40px;color:var(--text-dim);font-family:var(--font-mono)">Loading...</div>
+                </div>
+            </div>
+        `,
+        onReady: () => { loadGoals(); }
+    });
+}
+
+async function loadGoals() {
+    try {
+        const res = await fetch('/api/goals');
+        const goals = await res.json();
+        const list = document.getElementById('goals-list');
+        if (!list) return;
+        if (!goals.length) {
+            list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);font-family:var(--font-mono)">No goals yet. Create one to get started!</div>';
+            return;
+        }
+        list.innerHTML = goals.map(g => `
+            <div class="agent-card" style="flex-direction:column;align-items:stretch">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <div class="agent-card-name">${escapeHTML(g.title)}</div>
+                    <span class="agent-card-status ${g.status === 'active' ? 'running' : 'completed'}">${g.status} — ${g.progress}%</span>
+                </div>
+                ${g.description ? `<div style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);margin-top:4px">${escapeHTML(g.description)}</div>` : ''}
+                <div style="margin-top:8px;height:4px;background:rgba(0,212,255,0.1);border-radius:2px;overflow:hidden">
+                    <div style="height:100%;width:${g.progress}%;background:linear-gradient(90deg,var(--primary),var(--accent));border-radius:2px;transition:width 0.3s"></div>
+                </div>
+                ${g.milestones && g.milestones.length ? `<div style="margin-top:8px;font-family:var(--font-mono);font-size:11px">${g.milestones.map(m =>
+                    `<div style="padding:3px 0;color:${m.completed ? 'var(--success)' : 'var(--text-dim)'}">${m.completed ? '&#10003;' : '&#9675;'} ${escapeHTML(m.title)}</div>`
+                ).join('')}</div>` : ''}
+            </div>
+        `).join('');
+    } catch (err) {
+        const list = document.getElementById('goals-list');
+        if (list) list.innerHTML = `<div style="color:var(--danger)">${err.message}</div>`;
+    }
+}
+
+async function getBriefing() {
+    try {
+        const res = await fetch('/api/goals/briefing');
+        const data = await res.json();
+        const el = document.getElementById('goals-briefing');
+        if (el) { el.textContent = data.briefing; el.style.display = 'block'; }
+    } catch (err) { console.error(err); }
+}
+
+function createGoalDialog() {
+    const title = prompt('Goal title:');
+    if (!title) return;
+    const desc = prompt('Description (optional):') || '';
+    const msInput = prompt('Milestones (comma-separated, optional):') || '';
+    const milestones = msInput ? msInput.split(',').map(s => s.trim()).filter(Boolean) : [];
+    fetch('/api/goals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, description: desc, milestones }),
+    }).then(() => loadGoals());
+}
+
+/* ── Reminders ──────────────────────────────────────────────── */
+function openReminders() {
+    if (wm.isOpen('reminders')) { wm.focusWindow('reminders'); return; }
+    wm.createWindow({
+        id: 'reminders',
+        title: 'REMINDERS',
+        icon: '&#9200;',
+        width: 650,
+        height: 500,
+        content: `
+            <div style="padding:16px;height:100%;overflow-y:auto">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <span style="font-family:var(--font-display);font-size:14px;letter-spacing:2px;color:var(--primary)">REMINDERS</span>
+                    <button class="btn-spawn" onclick="createReminderDialog()">+ Set Reminder</button>
+                </div>
+                <div id="reminders-list">
+                    <div style="text-align:center;padding:40px;color:var(--text-dim);font-family:var(--font-mono)">Loading...</div>
+                </div>
+            </div>
+        `,
+        onReady: () => { loadReminders(); }
+    });
+}
+
+async function loadReminders() {
+    try {
+        // Use the command API to list reminders
+        const res = await fetch('/api/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'list my reminders', source: 'reminders_app' }),
+        });
+        // Also try direct plugin execution if API exists
+        const listEl = document.getElementById('reminders-list');
+        if (listEl) {
+            listEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);font-family:var(--font-mono)">Ask JARVIS to set reminders. They\'ll appear here and trigger as notifications.</div>';
+        }
+    } catch (err) {
+        console.error(err);
+    }
+}
+
+function createReminderDialog() {
+    const msg = prompt('What to remind about?');
+    if (!msg) return;
+    const time = prompt('When? (e.g., "in 30 minutes", "3pm", "tomorrow")');
+    if (!time) return;
+    if (window.jarvisWS && window.jarvisWS.readyState === WebSocket.OPEN) {
+        window.jarvisWS.send(JSON.stringify({
+            type: 'command', command: `remind me to ${msg} ${time}`, source: 'assistant',
+        }));
+        addNotification(`Reminder set: ${msg}`, 'success');
+    }
+}
+
+/* ── Contacts ───────────────────────────────────────────────── */
+function openContacts() {
+    if (wm.isOpen('contacts')) { wm.focusWindow('contacts'); return; }
+    wm.createWindow({
+        id: 'contacts',
+        title: 'CONTACTS',
+        icon: '&#128101;',
+        width: 700,
+        height: 500,
+        content: `
+            <div style="padding:16px;height:100%;overflow-y:auto">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <span style="font-family:var(--font-display);font-size:14px;letter-spacing:2px;color:var(--primary)">CONTACTS</span>
+                    <button class="btn-spawn" onclick="addContactDialog()">+ Add Contact</button>
+                </div>
+                <div style="margin-bottom:12px">
+                    <input type="text" id="contact-search" placeholder="Search contacts..."
+                        style="width:100%;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:var(--font-mono);font-size:12px;outline:none"
+                        oninput="searchContacts(this.value)">
+                </div>
+                <div id="contacts-list">
+                    <div style="text-align:center;padding:40px;color:var(--text-dim);font-family:var(--font-mono)">No contacts yet</div>
+                </div>
+            </div>
+        `,
+        onReady: () => { searchContacts(''); }
+    });
+}
+
+async function searchContacts(query) {
+    try {
+        const url = query ? `/api/command` : `/api/command`;
+        // Use command API for search
+        const listEl = document.getElementById('contacts-list');
+        if (!listEl) return;
+        // Direct approach — talk to JARVIS to manage contacts
+        listEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);font-family:var(--font-mono)">Ask JARVIS to add or search contacts. Example: "Add John as a colleague"</div>';
+    } catch (err) { console.error(err); }
+}
+
+function addContactDialog() {
+    const name = prompt('Contact name:');
+    if (!name) return;
+    const rel = prompt('Relationship (friend, colleague, family):') || '';
+    const notes = prompt('Notes (optional):') || '';
+    if (window.jarvisWS && window.jarvisWS.readyState === WebSocket.OPEN) {
+        window.jarvisWS.send(JSON.stringify({
+            type: 'command',
+            command: `add contact ${name}${rel ? ', ' + rel : ''}${notes ? '. Notes: ' + notes : ''}`,
+            source: 'assistant',
+        }));
+        addNotification(`Contact added: ${name}`, 'success');
+    }
+}
+
 /* ── App Launcher ────────────────────────────────────────────── */
 function openApp(appName) {
     switch (appName) {
@@ -768,6 +986,9 @@ function openApp(appName) {
         case 'monitor': openMonitor(); break;
         case 'agents': openAgentHub(); break;
         case 'memory': openMemory(); break;
+        case 'goals': openGoals(); break;
+        case 'reminders': openReminders(); break;
+        case 'contacts': openContacts(); break;
         case 'plugins': openPlugins(); break;
         case 'settings': openSettings(); break;
         case 'browser': openBrowser(); break;

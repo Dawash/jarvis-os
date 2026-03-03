@@ -1,328 +1,231 @@
 """
-JARVIS-OS Agent Manager — Orchestrates agents with plan-driven execution,
-command routing, and real-time progress broadcasting.
+JARVIS-OS Agent Manager — Orchestrates agents with planning, dialogue, and all subsystems.
 """
 
 import asyncio
 import logging
 import re
+import time
 from datetime import datetime
-from typing import Optional
 
 from agents.agent import Agent, AgentStatus
 from agents.planner import TaskPlanner
 from agents.llm_provider import LLMProvider
-from core.system_control import SystemControl
-from core.memory import MemoryStore
 
-logger = logging.getLogger("jarvis.agent_manager")
+logger = logging.getLogger("jarvis.agents")
 
-# Commands that can be handled instantly without LLM
+# Quick command patterns that bypass LLM
 QUICK_COMMANDS = {
-    r"^(hi|hello|hey|good morning|good evening)\b": "greeting",
-    r"^(what time|current time|time now)": "time",
-    r"^(system status|status|sys stats)$": "system_status",
-    r"^(clear|cls)$": "clear",
+    r"^(hi|hello|hey|good morning|good evening)\b": lambda m: f"Hello! I'm JARVIS. How can I assist you today?",
+    r"^what time": lambda m: f"The current time is {datetime.now().strftime('%I:%M %p')}.",
+    r"^what('?s| is) the date": lambda m: f"Today is {datetime.now().strftime('%A, %B %d, %Y')}.",
+    r"^system status$": lambda m: None,  # handled specially
+    r"^(clear|cls)$": lambda m: "__clear__",
+    r"^undo$": lambda m: "__undo__",
+    r"^briefing$": lambda m: "__briefing__",
 }
 
 
 class AgentManager:
-    """
-    Manages the lifecycle and orchestration of all AI agents.
-    Routes tasks through planning → execution → observation.
-    """
+    """Manages agent lifecycle with planning, dialogue context, and progress events."""
 
     def __init__(self, config: dict):
         self.config = config
-        self.llm = LLMProvider(config["llm"])
-        self.system_control = SystemControl()
-        self.memory = MemoryStore(config["system"].get("memory_dir", "./memory"))
+        self.llm = LLMProvider(config)
         self.planner = TaskPlanner(self.llm)
-
         self.agents: dict[str, Agent] = {}
-        self.max_concurrent = config["agents"]["max_concurrent"]
+        self.max_concurrent = config.get("agents", {}).get("max_concurrent", 10)
         self.kernel = None
         self.plugin_manager = None
-
-        # Task queue for overflow
-        self._task_queue = asyncio.Queue()
-        self._running_count = 0
+        self.action_history = None
+        self.goals_manager = None
+        self.dialogue_manager = None
 
     async def initialize(self, kernel):
         self.kernel = kernel
-        await self.system_control.initialize(kernel)
-        # Get plugin manager reference for tool dispatch
         self.plugin_manager = kernel.subsystems.get("plugins")
-        logger.info(f"Agent Manager online — max {self.max_concurrent} concurrent agents")
+        self.action_history = kernel.subsystems.get("action_history")
+        self.goals_manager = kernel.subsystems.get("goals")
+        self.dialogue_manager = kernel.subsystems.get("dialogue")
+
+        # Connect LLM router
+        lr = kernel.subsystems.get("llm_router")
+        if lr:
+            lr.llm_provider = self.llm
 
     async def shutdown(self):
-        # Cancel all running agents
         for agent in self.agents.values():
             if agent.status == AgentStatus.RUNNING:
                 agent.cancel()
-        await self.memory.shutdown()
 
     async def process(self, command: str, source: str = "dashboard") -> dict:
-        """
-        Process a user command:
-        1. Check for quick commands (no LLM needed)
-        2. Classify the task
-        3. Create a plan
-        4. Spawn and run an agent with the plan
-        """
-        # Store in memory
-        self.memory.store_conversation("user", command, {"source": source})
+        """Process a command — quick check → dialogue → plan → execute."""
+        command = command.strip()
+        if not command:
+            return {"result": "", "status": "empty"}
 
-        # Check quick commands first
-        quick = self._check_quick_command(command)
+        # 1. Quick commands
+        quick = self._check_quick_commands(command)
         if quick:
-            self.memory.store_conversation("assistant", quick["result"])
             return quick
 
-        # Classify the task type
-        agent_type = await self._classify_task(command)
+        # 2. Update dialogue state
+        if self.dialogue_manager:
+            ctx = self.dialogue_manager.get_context(source)
+            self.dialogue_manager.add_turn(source, "user", command)
+            self.dialogue_manager.transition(source, new_state=__import__("core.dialogue", fromlist=["DialogueState"]).DialogueState.PLANNING)
 
-        # Retrieve relevant memory context
-        context = ""
-        try:
-            recent = self.memory.get_recent_conversations(limit=10)
-            if recent:
-                context = "\n".join(
-                    f"{c['role']}: {c['content'][:200]}" for c in recent[-6:]
-                )
-        except Exception:
-            pass
-
-        # Create a plan for the task
-        await self._emit("agent.planning", {
-            "task": command[:200],
-            "status": "planning",
-            "message": "Creating execution plan...",
-        })
-
-        plan = await self.planner.create_plan(command, context)
-
-        # Check if plan says it's a direct response (simple Q&A)
-        if (len(plan.get("steps", [])) == 1
-                and plan["steps"][0].get("tool") == "direct_response"):
-            response = plan["steps"][0]["args"].get("response", "")
-            self.memory.store_conversation("assistant", response)
-            self.memory.log_task(command, response, "completed", "planner")
-            return {
-                "status": "completed",
-                "result": response,
-                "agent_id": "planner",
-                "plan": plan,
-            }
-
-        # Spawn an agent with the plan
-        agent = await self.spawn_agent(
-            task=command,
-            agent_type=agent_type,
-            source=source,
-        )
-        agent.plan = plan
-
-        # Broadcast the plan to dashboard
-        await self._emit("agent.plan_ready", {
-            "agent_id": agent.id,
-            "plan": plan,
-            "task": command[:200],
-        })
-
-        # Wait for completion
-        result = await self._run_agent(agent)
-
-        # Store result in memory
-        self.memory.store_conversation(
-            "assistant", result.get("result", ""), {"agent_id": agent.id}
-        )
-        self.memory.log_task(
-            command, result.get("result", ""),
-            result.get("status", "unknown"), agent.id
-        )
-
-        return result
-
-    def _check_quick_command(self, command: str) -> Optional[dict]:
-        """Handle instant commands without LLM."""
-        cmd_lower = command.strip().lower()
-
-        for pattern, cmd_type in QUICK_COMMANDS.items():
-            if re.match(pattern, cmd_lower):
-                if cmd_type == "greeting":
-                    return {
-                        "status": "completed",
-                        "result": "Hello! I'm JARVIS, your AI operating system. How can I assist you today?",
-                        "agent_id": "quick",
-                    }
-                elif cmd_type == "time":
-                    now = datetime.now().strftime("%H:%M:%S on %A, %B %d, %Y")
-                    return {
-                        "status": "completed",
-                        "result": f"The current time is {now}.",
-                        "agent_id": "quick",
-                    }
-                elif cmd_type == "system_status":
-                    stats = self.system_control.get_system_stats()
-                    return {
-                        "status": "completed",
-                        "result": f"CPU: {stats['cpu']['usage_percent']}% | Memory: {stats['memory']['percent']}% ({stats['memory']['used_gb']}/{stats['memory']['total_gb']} GB) | Disk: {stats['disk']['percent']}% | Active Agents: {self._running_count}",
-                        "agent_id": "quick",
-                    }
-                elif cmd_type == "clear":
-                    return {
-                        "status": "completed",
-                        "result": "[CLEAR]",
-                        "agent_id": "quick",
-                    }
-        return None
-
-    async def _classify_task(self, task: str) -> str:
-        """Use LLM to classify what type of agent should handle this task."""
-        try:
-            response = await self.llm.chat(
-                messages=[{"role": "user", "content": task}],
-                system="""Classify this task into exactly one category. Respond with ONLY the category name:
-- system: file operations, process management, system monitoring, shell commands
-- research: web search, information gathering, fact-checking
-- code: programming, debugging, code review, code generation
-- creative: writing, content creation, brainstorming
-- data: data analysis, visualization, statistics, CSV/JSON processing
-- automation: scheduling, workflow automation, scripting
-- general: anything that doesn't fit above""",
-                max_tokens=20,
-            )
-            category = response["content"].strip().lower()
-            valid = ["system", "research", "code", "creative", "data", "automation", "general"]
-            return category if category in valid else "general"
-        except Exception:
-            return "general"
-
-    async def spawn_agent(
-        self,
-        task: str,
-        agent_type: str = "general",
-        name: str = None,
-        source: str = "system",
-    ) -> Agent:
-        """Spawn a new agent for a task."""
-        agent = Agent(
-            name=name or f"JARVIS-{agent_type.upper()}-{len(self.agents) + 1}",
-            agent_type=agent_type,
-            llm_provider=self.llm,
-            system_control=self.system_control,
-            memory=self.memory,
-            plugin_manager=self.plugin_manager,
-        )
-        agent.task = task
-        self.agents[agent.id] = agent
-
-        # Notify kernel
-        if self.kernel:
-            self.kernel.state["active_agents"] = sum(
-                1 for a in self.agents.values() if a.status == AgentStatus.RUNNING
-            )
-            await self._emit("agent.spawned", {
-                "agent_id": agent.id,
-                "name": agent.name,
-                "type": agent_type,
-                "task": task[:200],
-            })
-
-        logger.info(f"Agent spawned: {agent.name} ({agent.id}) — type: {agent_type}")
-        return agent
-
-    async def _run_agent(self, agent: Agent) -> dict:
-        """Run an agent and handle the result."""
-        self._running_count += 1
-
-        async def on_step(ag, step):
-            """Callback for each agent step — broadcast to dashboard."""
-            await self._emit("agent.step", {
-                "agent_id": ag.id,
-                "agent_name": ag.name,
-                "step": step,
-                "total_steps": len(ag.steps),
-                "plan_progress": self._get_plan_progress(ag),
-            })
-
-        try:
-            result = await agent.run(agent.task, callback=on_step)
-        except Exception as e:
-            result = {"status": "error", "error": str(e), "agent_id": agent.id}
-        finally:
-            self._running_count -= 1
-            if self.kernel:
-                self.kernel.state["active_agents"] = self._running_count
-                await self._emit("agent.completed", {
-                    "agent_id": agent.id,
-                    "agent_name": agent.name,
-                    "status": result.get("status"),
-                    "result": str(result.get("result", ""))[:500],
-                    "steps_taken": len(agent.steps),
-                })
-
-        return result
-
-    def _get_plan_progress(self, agent: Agent) -> Optional[dict]:
-        """Get plan progress info for the UI."""
-        if not agent.plan:
-            return None
-        steps = agent.plan.get("steps", [])
-        completed = sum(1 for s in steps if s.get("status") == "completed")
-        return {
-            "total": len(steps),
-            "completed": completed,
-            "percent": int((completed / len(steps)) * 100) if steps else 0,
-            "current_step": next(
-                (s["description"] for s in steps if s.get("status") == "pending"),
-                "Finishing up..."
-            ),
-        }
-
-    async def _emit(self, event_type: str, data: dict):
-        """Emit a kernel event."""
+        # 3. Emit planning event
         if self.kernel:
             from core.kernel import Event
-            await self.kernel.emit_event(Event(event_type, data))
+            await self.kernel.emit_event(Event("agent.planning", {"command": command}))
 
-    async def spawn_parallel_agents(self, tasks: list[dict]) -> list[dict]:
-        """Spawn multiple agents in parallel."""
-        agents = []
-        for t in tasks:
-            agent = await self.spawn_agent(
-                task=t["task"],
-                agent_type=t.get("type", "general"),
-                name=t.get("name"),
-            )
-            agents.append(agent)
+        # 4. Create plan
+        memory_context = ""
+        if self.kernel:
+            mem = self.kernel.subsystems.get("memory")
+            if mem:
+                relevant = mem.query_all_tiers(command)
+                if any(relevant.values()):
+                    parts = []
+                    for tier, items in relevant.items():
+                        if items:
+                            for item in items[:3]:
+                                content = item.get("content", "") or item.get("fact", "")
+                                if content:
+                                    parts.append(f"[{tier}] {content[:100]}")
+                    if parts:
+                        memory_context = "Relevant memory:\n" + "\n".join(parts)
 
-        results = await asyncio.gather(
-            *[self._run_agent(a) for a in agents],
-            return_exceptions=True,
+        plan = await self.planner.create_plan(command, memory_context)
+
+        # 5. Check for direct response
+        if plan.get("direct_response"):
+            result = plan["direct_response"]
+            if self.dialogue_manager:
+                self.dialogue_manager.add_turn(source, "jarvis", result)
+                self.dialogue_manager.transition(source, new_state=__import__("core.dialogue", fromlist=["DialogueState"]).DialogueState.IDLE)
+            return {"result": result, "status": "completed", "plan": plan}
+
+        # 6. Emit plan
+        if self.kernel:
+            from core.kernel import Event
+            await self.kernel.emit_event(Event("agent.plan_ready", {
+                "plan": plan, "steps": plan.get("steps", []),
+            }))
+
+        # 7. Spawn agent
+        agent = self._spawn_agent(command, plan)
+
+        # 8. Update dialogue state
+        if self.dialogue_manager:
+            self.dialogue_manager.transition(source, new_state=__import__("core.dialogue", fromlist=["DialogueState"]).DialogueState.EXECUTING)
+
+        # 9. Execute
+        async def progress_callback(event_data):
+            if self.kernel:
+                from core.kernel import Event
+                event_data["agent_id"] = agent.agent_id
+                await self.kernel.emit_event(Event("agent.step", event_data))
+
+        result = await agent.run(command, callback=progress_callback)
+
+        # 10. Store in memory
+        if self.kernel:
+            mem = self.kernel.subsystems.get("memory")
+            if mem:
+                mem.store_conversation("user", command, {"source": source})
+                mem.store_conversation("jarvis", result.get("result", ""), {"agent_id": agent.agent_id})
+                mem.log_task(command, result.get("result", "")[:500], result.get("status", ""))
+
+        # 11. Emit completion
+        if self.kernel:
+            from core.kernel import Event
+            await self.kernel.emit_event(Event("agent.completed", {
+                "agent_id": agent.agent_id,
+                "result": result.get("result", ""),
+                "status": result.get("status", ""),
+                "steps": len(result.get("steps", [])),
+            }))
+
+        # 12. Update dialogue
+        if self.dialogue_manager:
+            self.dialogue_manager.add_turn(source, "jarvis", result.get("result", "")[:500])
+            self.dialogue_manager.transition(source, new_state=__import__("core.dialogue", fromlist=["DialogueState"]).DialogueState.IDLE)
+
+        return {
+            "result": result.get("result", ""),
+            "status": result.get("status", "completed"),
+            "agent_id": agent.agent_id,
+            "plan": plan,
+            "steps": result.get("steps", []),
+        }
+
+    def _check_quick_commands(self, command: str) -> dict:
+        """Check for quick commands that bypass LLM."""
+        cmd_lower = command.lower().strip()
+
+        for pattern, handler in QUICK_COMMANDS.items():
+            match = re.match(pattern, cmd_lower)
+            if match:
+                result = handler(match)
+
+                if result == "__clear__":
+                    return {"result": "", "status": "completed", "action": "clear"}
+
+                if result == "__undo__":
+                    # Handle async undo
+                    return {"result": "Processing undo...", "status": "completed", "action": "undo"}
+
+                if result == "__briefing__":
+                    if self.goals_manager:
+                        briefing = self.goals_manager.generate_briefing()
+                        return {"result": briefing, "status": "completed"}
+                    return {"result": "No goals set yet.", "status": "completed"}
+
+                if result is None and "system status" in cmd_lower:
+                    info = self._get_system_status()
+                    return {"result": info, "status": "completed"}
+
+                if result:
+                    return {"result": result, "status": "completed"}
+
+        return None
+
+    def _get_system_status(self) -> str:
+        parts = [
+            f"JARVIS-OS v{self.config.get('system', {}).get('version', '2.0.0')}",
+            f"LLM: {self.llm.provider} ({self.llm.model})",
+            f"Agents: {sum(1 for a in self.agents.values() if a.status == AgentStatus.RUNNING)} running",
+            f"Plugins: {len(self.plugin_manager.plugins) if self.plugin_manager else 0} loaded",
+        ]
+        if self.goals_manager:
+            active_goals = len(self.goals_manager.get_active_goals())
+            parts.append(f"Goals: {active_goals} active")
+        if self.llm.is_offline:
+            parts.append("Mode: OFFLINE")
+        return " | ".join(parts)
+
+    def _spawn_agent(self, task: str, plan: dict = None) -> Agent:
+        """Create a new agent with all subsystem connections."""
+        agent_id = f"agent_{int(time.time() * 1000)}"
+        agent = Agent(
+            agent_id=agent_id,
+            name=f"Agent-{len(self.agents) + 1}",
+            agent_type=plan.get("type", "general") if plan else "general",
+            llm_provider=self.llm,
+            system_control=self.kernel.subsystems.get("system_control") if self.kernel else None,
+            memory=self.kernel.subsystems.get("memory") if self.kernel else None,
+            plugin_manager=self.plugin_manager,
+            action_history=self.action_history,
+            goals_manager=self.goals_manager,
+            dialogue_manager=self.dialogue_manager,
         )
+        agent.plan = plan
+        self.agents[agent_id] = agent
+        return agent
 
-        return [
-            r if isinstance(r, dict) else {"status": "error", "error": str(r)}
-            for r in results
-        ]
-
-    def get_agent(self, agent_id: str) -> Optional[Agent]:
-        return self.agents.get(agent_id)
-
-    def get_all_agents(self) -> list[dict]:
-        return [a.to_dict() for a in self.agents.values()]
-
-    def get_active_agents(self) -> list[dict]:
-        return [
-            a.to_dict() for a in self.agents.values()
-            if a.status == AgentStatus.RUNNING
-        ]
-
-    def cancel_agent(self, agent_id: str) -> bool:
+    def cancel_agent(self, agent_id: str):
         agent = self.agents.get(agent_id)
-        if agent and agent.status == AgentStatus.RUNNING:
+        if agent:
             agent.cancel()
-            return True
-        return False

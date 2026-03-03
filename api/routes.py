@@ -1,315 +1,389 @@
 """
-JARVIS-OS API Routes — REST + WebSocket endpoints for the entire OS.
+JARVIS-OS API Routes — REST endpoints for all subsystems.
 """
 
 import asyncio
-import shutil
+import json
+import logging
+import os
 from pathlib import Path
+
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
 from typing import Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, UploadFile, File, Form
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-
-from core.kernel import get_kernel
-from setup_wizard import save_api_key, get_configured_providers, get_masked_keys
-
-router = APIRouter(prefix="/api")
+logger = logging.getLogger("jarvis.api")
+router = APIRouter()
 
 
-# ── Request Models ───────────────────────────────────────────────
-class CommandRequest(BaseModel):
-    command: str
-    source: str = "dashboard"
-
-class ApiKeyRequest(BaseModel):
-    provider: str
-    api_key: str
-
-class ExecuteRequest(BaseModel):
-    command: str
-    cwd: Optional[str] = None
-    timeout: int = 60
-
-class SpawnAgentRequest(BaseModel):
-    task: str
-    type: str = "general"
-    name: Optional[str] = None
-
-class CreatePluginRequest(BaseModel):
-    name: str
-    description: str
-    capabilities: list = []
-    code: Optional[str] = None
-
-class FileWriteRequest(BaseModel):
-    path: str
-    content: str
+def get_kernel(request: Request):
+    from main import kernel
+    return kernel
 
 
 # ── System ───────────────────────────────────────────────────────
+
 @router.get("/system/info")
-async def system_info():
-    kernel = get_kernel()
-    return kernel.get_system_info()
+async def system_info(request: Request):
+    kernel = get_kernel(request)
+    return {
+        "name": kernel.config.get("system", {}).get("name", "JARVIS-OS"),
+        "version": kernel.config.get("system", {}).get("version", "1.0.0"),
+        "codename": kernel.config.get("system", {}).get("codename", "ARC REACTOR"),
+        "status": kernel.state,
+        "subsystems": list(kernel.subsystems.keys()),
+    }
 
 @router.get("/system/stats")
-async def system_stats():
-    kernel = get_kernel()
+async def system_stats(request: Request):
+    kernel = get_kernel(request)
     sc = kernel.subsystems.get("system_control")
     if sc:
         return sc.get_system_stats()
     return {"error": "System control not available"}
 
 @router.get("/system/processes")
-async def system_processes(sort_by: str = "cpu_percent", limit: int = 20):
-    kernel = get_kernel()
+async def system_processes(request: Request, limit: int = 15):
+    kernel = get_kernel(request)
     sc = kernel.subsystems.get("system_control")
     if sc:
-        return sc.get_processes(sort_by=sort_by, limit=limit)
+        return sc.get_processes(limit)
     return []
-
-@router.post("/system/restart")
-async def system_restart():
-    kernel = get_kernel()
-    await kernel.emit_event(type("Event", (), {"type": "system.restart", "data": {}, "source": "api", "timestamp": ""})())
-    return {"status": "restarting"}
-
-@router.post("/system/shutdown")
-async def system_shutdown():
-    kernel = get_kernel()
-    asyncio.create_task(kernel.shutdown())
-    return {"status": "shutting_down"}
 
 
 # ── Commands ─────────────────────────────────────────────────────
+
+class CommandRequest(BaseModel):
+    command: str
+    source: str = "api"
+
 @router.post("/command")
-async def process_command(req: CommandRequest):
-    kernel = get_kernel()
+async def run_command(req: CommandRequest, request: Request):
+    kernel = get_kernel(request)
     result = await kernel.process_command(req.command, req.source)
     return result
 
 
-# ── Shell Execution ──────────────────────────────────────────────
+# ── Execute Shell ────────────────────────────────────────────────
+
+class ExecuteRequest(BaseModel):
+    command: str
+
 @router.post("/execute")
-async def execute_command(req: ExecuteRequest):
-    kernel = get_kernel()
+async def execute_shell(req: ExecuteRequest, request: Request):
+    kernel = get_kernel(request)
     sc = kernel.subsystems.get("system_control")
     if sc:
-        result = await sc.execute_command(req.command, cwd=req.cwd, timeout=req.timeout)
-        return result
+        return await sc.execute_command(req.command)
     return {"error": "System control not available"}
 
 
 # ── Files ────────────────────────────────────────────────────────
+
 @router.get("/files/list")
-async def list_files(path: str = "/"):
-    kernel = get_kernel()
+async def list_files(request: Request, path: str = "."):
+    kernel = get_kernel(request)
     sc = kernel.subsystems.get("system_control")
     if sc:
-        try:
-            items = sc.list_directory(path)
-            resolved = str(Path(path).resolve())
-            return {"items": items, "current_path": resolved}
-        except Exception as e:
-            return {"error": str(e), "items": []}
+        return sc.list_directory(path)
     return {"error": "System control not available"}
-
-@router.get("/files/read")
-async def read_file(path: str):
-    kernel = get_kernel()
-    sc = kernel.subsystems.get("system_control")
-    if sc:
-        return sc.read_file(path)
-    return {"error": "System control not available"}
-
-@router.post("/files/write")
-async def write_file(req: FileWriteRequest):
-    kernel = get_kernel()
-    sc = kernel.subsystems.get("system_control")
-    if sc:
-        return sc.write_file(req.path, req.content)
-    return {"error": "System control not available"}
-
-@router.post("/upload")
-async def upload_files(files: list[UploadFile] = File(...)):
-    upload_dir = Path("./data/uploads")
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    uploaded = []
-    for f in files:
-        dest = upload_dir / f.filename
-        with open(dest, "wb") as buf:
-            content = await f.read()
-            buf.write(content)
-        uploaded.append({
-            "name": f.filename,
-            "path": str(dest.resolve()),
-            "size": len(content),
-            "content_type": f.content_type,
-        })
-
-    return {"status": "success", "files": uploaded}
 
 
 # ── Agents ───────────────────────────────────────────────────────
+
 @router.get("/agents")
-async def list_agents():
-    kernel = get_kernel()
+async def list_agents(request: Request):
+    kernel = get_kernel(request)
     am = kernel.subsystems.get("agents")
     if am:
-        return am.get_all_agents()
+        return [
+            {"id": a.agent_id, "name": a.name, "task": a.task,
+             "status": a.status.value, "agent_type": a.agent_type}
+            for a in am.agents.values()
+        ]
     return []
 
-@router.get("/agents/active")
-async def active_agents():
-    kernel = get_kernel()
-    am = kernel.subsystems.get("agents")
-    if am:
-        return am.get_active_agents()
-    return []
+class SpawnRequest(BaseModel):
+    task: str
+    type: str = "general"
 
 @router.post("/agents/spawn")
-async def spawn_agent(req: SpawnAgentRequest):
-    kernel = get_kernel()
+async def spawn_agent(req: SpawnRequest, request: Request):
+    kernel = get_kernel(request)
     am = kernel.subsystems.get("agents")
     if am:
-        agent = await am.spawn_agent(req.task, req.type, req.name)
-        # Run in background
-        asyncio.create_task(am._run_agent(agent))
-        return {"status": "spawned", "agent": agent.to_dict()}
-    return {"error": "Agent manager not available"}
-
-@router.post("/agents/{agent_id}/cancel")
-async def cancel_agent(agent_id: str):
-    kernel = get_kernel()
-    am = kernel.subsystems.get("agents")
-    if am:
-        success = am.cancel_agent(agent_id)
-        return {"status": "cancelled" if success else "not_found"}
+        result = await am.process(req.task, "api")
+        return result
     return {"error": "Agent manager not available"}
 
 
 # ── Memory ───────────────────────────────────────────────────────
+
 @router.get("/memory/conversations")
-async def get_conversations(limit: int = 50):
-    kernel = get_kernel()
-    am = kernel.subsystems.get("agents")
-    if am and am.memory:
-        return am.memory.get_recent_conversations(limit)
-    return []
+async def get_conversations(request: Request, limit: int = 50):
+    kernel = get_kernel(request)
+    mem = kernel.subsystems.get("memory")
+    return mem.get_recent_conversations(limit) if mem else []
 
 @router.get("/memory/facts")
-async def get_facts(category: Optional[str] = None):
-    kernel = get_kernel()
-    am = kernel.subsystems.get("agents")
-    if am and am.memory:
-        return am.memory.get_facts(category)
-    return []
+async def get_facts(request: Request, category: str = None):
+    kernel = get_kernel(request)
+    mem = kernel.subsystems.get("memory")
+    return mem.get_facts(category) if mem else []
 
 @router.get("/memory/tasks")
-async def get_task_history(limit: int = 50):
-    kernel = get_kernel()
-    am = kernel.subsystems.get("agents")
-    if am and am.memory:
-        return am.memory.get_task_history(limit)
-    return []
+async def get_tasks(request: Request, limit: int = 50):
+    kernel = get_kernel(request)
+    mem = kernel.subsystems.get("memory")
+    return mem.get_task_history(limit) if mem else []
+
+@router.get("/memory/stats")
+async def memory_stats(request: Request):
+    kernel = get_kernel(request)
+    mem = kernel.subsystems.get("memory")
+    return mem.get_memory_stats() if mem else {}
 
 @router.get("/memory/search")
-async def search_memory(query: str, limit: int = 10):
-    kernel = get_kernel()
+async def search_memory(request: Request, q: str = ""):
+    kernel = get_kernel(request)
+    mem = kernel.subsystems.get("memory")
+    if mem and q:
+        return mem.query_all_tiers(q)
+    return {"stm": [], "mtm": [], "lpm": [], "conversations": []}
+
+@router.get("/memory/profile")
+async def user_profile(request: Request):
+    kernel = get_kernel(request)
+    mem = kernel.subsystems.get("memory")
+    return mem.get_user_profile() if mem else {}
+
+@router.get("/memory/hot")
+async def hot_memories(request: Request, limit: int = 10):
+    kernel = get_kernel(request)
+    mem = kernel.subsystems.get("memory")
+    return mem.mtm_get_hot(limit) if mem else []
+
+
+# ── Action History & Undo ────────────────────────────────────────
+
+@router.get("/actions")
+async def action_history(request: Request, limit: int = 50):
+    kernel = get_kernel(request)
+    ah = kernel.subsystems.get("action_history")
+    return ah.get_history(limit) if ah else []
+
+@router.get("/actions/reversible")
+async def reversible_actions(request: Request, limit: int = 20):
+    kernel = get_kernel(request)
+    ah = kernel.subsystems.get("action_history")
+    return ah.get_reversible_actions(limit) if ah else []
+
+@router.post("/actions/undo")
+async def undo_action(request: Request):
+    kernel = get_kernel(request)
+    ah = kernel.subsystems.get("action_history")
+    if ah:
+        return await ah.undo_last()
+    return {"status": "error", "message": "Action history not available"}
+
+
+# ── Goals ────────────────────────────────────────────────────────
+
+@router.get("/goals")
+async def list_goals(request: Request):
+    kernel = get_kernel(request)
+    gm = kernel.subsystems.get("goals")
+    return gm.get_all_goals() if gm else []
+
+@router.get("/goals/active")
+async def active_goals(request: Request):
+    kernel = get_kernel(request)
+    gm = kernel.subsystems.get("goals")
+    return gm.get_active_goals() if gm else []
+
+@router.get("/goals/briefing")
+async def goal_briefing(request: Request):
+    kernel = get_kernel(request)
+    gm = kernel.subsystems.get("goals")
+    return {"briefing": gm.generate_briefing()} if gm else {"briefing": "Goals not available"}
+
+class CreateGoalRequest(BaseModel):
+    title: str
+    description: str = ""
+    deadline: str = None
+    milestones: list = None
+    priority: str = "medium"
+
+@router.post("/goals")
+async def create_goal(req: CreateGoalRequest, request: Request):
+    kernel = get_kernel(request)
+    gm = kernel.subsystems.get("goals")
+    if gm:
+        return gm.create_goal(req.title, req.description, req.deadline, req.milestones, req.priority)
+    return {"error": "Goals not available"}
+
+class UpdateGoalRequest(BaseModel):
+    updates: dict = {}
+
+@router.put("/goals/{goal_id}")
+async def update_goal(goal_id: str, req: UpdateGoalRequest, request: Request):
+    kernel = get_kernel(request)
+    gm = kernel.subsystems.get("goals")
+    if gm:
+        result = gm.update_goal(goal_id, req.updates)
+        return result or {"error": "Goal not found"}
+    return {"error": "Goals not available"}
+
+@router.delete("/goals/{goal_id}")
+async def delete_goal(goal_id: str, request: Request):
+    kernel = get_kernel(request)
+    gm = kernel.subsystems.get("goals")
+    if gm:
+        return {"deleted": gm.delete_goal(goal_id)}
+    return {"error": "Goals not available"}
+
+
+# ── LLM Router / Token Budget ───────────────────────────────────
+
+@router.get("/llm/stats")
+async def llm_stats(request: Request):
+    kernel = get_kernel(request)
+    lr = kernel.subsystems.get("llm_router")
+    return lr.get_stats() if lr else {}
+
+@router.get("/llm/budget")
+async def llm_budget(request: Request):
+    kernel = get_kernel(request)
+    lr = kernel.subsystems.get("llm_router")
+    return lr.get_budget_status() if lr else {}
+
+@router.get("/llm/connectivity")
+async def llm_connectivity(request: Request):
+    kernel = get_kernel(request)
     am = kernel.subsystems.get("agents")
-    if am and am.memory:
-        return am.memory.search_conversations(query, limit)
-    return []
+    if am and hasattr(am, "llm"):
+        return await am.llm.check_connectivity()
+    return {"error": "LLM not available"}
+
+class SwitchProviderRequest(BaseModel):
+    provider: str
+
+@router.post("/llm/switch")
+async def switch_provider(req: SwitchProviderRequest, request: Request):
+    kernel = get_kernel(request)
+    am = kernel.subsystems.get("agents")
+    if am and hasattr(am, "llm"):
+        success = am.llm.switch_provider(req.provider)
+        return {"success": success, "provider": am.llm.provider}
+    return {"error": "LLM not available"}
+
+
+# ── Dialogue State ───────────────────────────────────────────────
+
+@router.get("/dialogue/contexts")
+async def dialogue_contexts(request: Request):
+    kernel = get_kernel(request)
+    dm = kernel.subsystems.get("dialogue")
+    return dm.get_all_contexts() if dm else {}
 
 
 # ── Plugins ──────────────────────────────────────────────────────
-@router.get("/plugins")
-async def list_plugins():
-    kernel = get_kernel()
-    pm = kernel.subsystems.get("plugins")
-    if pm:
-        return pm.get_all_plugins()
-    return []
 
-@router.post("/plugins/create")
-async def create_plugin(req: CreatePluginRequest):
-    kernel = get_kernel()
+@router.get("/plugins")
+async def list_plugins(request: Request):
+    kernel = get_kernel(request)
     pm = kernel.subsystems.get("plugins")
-    if pm:
-        return await pm.create_plugin(req.name, req.description, req.capabilities, req.code)
-    return {"error": "Plugin manager not available"}
+    return pm.get_plugin_list() if pm else []
 
 @router.post("/plugins/discover")
-async def discover_plugins():
-    kernel = get_kernel()
+async def discover_plugins(request: Request):
+    kernel = get_kernel(request)
     pm = kernel.subsystems.get("plugins")
     if pm:
-        await pm.discover_and_load()
-        return {"status": "success", "plugins": pm.get_all_plugins()}
+        await pm.discover_plugins()
+        return {"status": "success", "plugins": pm.get_plugin_list()}
+    return {"error": "Plugin manager not available"}
+
+class PluginInstallRequest(BaseModel):
+    url: str
+
+@router.post("/plugins/install")
+async def install_plugin(req: PluginInstallRequest, request: Request):
+    kernel = get_kernel(request)
+    pm = kernel.subsystems.get("plugins")
+    if pm:
+        return await pm.install_from_git(req.url)
+    return {"error": "Plugin manager not available"}
+
+@router.post("/plugins/{name}/reload")
+async def reload_plugin(name: str, request: Request):
+    kernel = get_kernel(request)
+    pm = kernel.subsystems.get("plugins")
+    if pm:
+        result = await pm.reload_plugin(name)
+        return {"status": "success" if result else "error"}
     return {"error": "Plugin manager not available"}
 
 
 # ── Voice ────────────────────────────────────────────────────────
+
 @router.get("/voice/status")
-async def voice_status():
-    kernel = get_kernel()
+async def voice_status(request: Request):
+    kernel = get_kernel(request)
     ve = kernel.subsystems.get("voice")
-    if ve:
-        return ve.get_status()
-    return {"enabled": False}
-
-@router.post("/voice/toggle")
-async def toggle_voice():
-    kernel = get_kernel()
-    ve = kernel.subsystems.get("voice")
-    if ve:
-        if ve.is_listening:
-            ve.stop_listening()
-        else:
-            ve.start_listening()
-        return ve.get_status()
-    return {"error": "Voice engine not available"}
-
-@router.post("/voice/speak")
-async def speak(text: str = Form(...)):
-    kernel = get_kernel()
-    ve = kernel.subsystems.get("voice")
-    if ve:
-        await ve.speak_async(text)
-        return {"status": "speaking"}
-    return {"error": "Voice engine not available"}
+    return ve.get_status() if ve else {"enabled": False}
 
 @router.post("/voice/barge-in")
-async def voice_barge_in():
-    """Interrupt TTS immediately (barge-in)."""
-    kernel = get_kernel()
+async def voice_barge_in(request: Request):
+    kernel = get_kernel(request)
     ve = kernel.subsystems.get("voice")
     if ve:
         ve.barge_in()
-        return {"status": "interrupted", "was_speaking": ve.is_speaking}
+        return {"status": "barge_in_triggered"}
     return {"error": "Voice engine not available"}
 
 
 # ── Setup / API Keys ────────────────────────────────────────────
-@router.get("/setup/status")
-async def setup_status():
-    """Check if API keys are configured — used by dashboard first-boot."""
-    return get_configured_providers()
 
 @router.get("/setup/keys")
-async def get_keys():
-    """Return masked API keys for display in Settings."""
-    providers = get_configured_providers()
-    masked = get_masked_keys()
+async def get_key_status():
+    oai_key = os.environ.get("OPENAI_API_KEY", "")
+    ant_key = os.environ.get("ANTHROPIC_API_KEY", "")
     return {
-        "openai": {"active": providers["openai"], "masked": masked["openai"]},
-        "anthropic": {"active": providers["anthropic"], "masked": masked["anthropic"]},
+        "openai": {
+            "active": bool(oai_key),
+            "masked": f"...{oai_key[-6:]}" if oai_key else None,
+        },
+        "anthropic": {
+            "active": bool(ant_key),
+            "masked": f"...{ant_key[-6:]}" if ant_key else None,
+        },
     }
+
+class ApiKeyRequest(BaseModel):
+    provider: str
+    api_key: str
 
 @router.post("/setup/apikey")
 async def set_api_key(req: ApiKeyRequest):
-    """Save an API key from the dashboard setup wizard."""
-    result = save_api_key(req.provider, req.api_key)
-    return result
+    env_path = Path(__file__).parent.parent / ".env"
+    lines = []
+    if env_path.exists():
+        lines = env_path.read_text().splitlines()
+
+    env_var = f"{'OPENAI' if req.provider == 'openai' else 'ANTHROPIC'}_API_KEY"
+    new_line = f"{env_var}={req.api_key}"
+
+    updated = False
+    for i, line in enumerate(lines):
+        if line.startswith(f"{env_var}="):
+            lines[i] = new_line
+            updated = True
+            break
+    if not updated:
+        lines.append(new_line)
+
+    env_path.write_text("\n".join(lines) + "\n")
+    os.environ[env_var] = req.api_key
+
+    return {"status": "success", "message": f"{req.provider.capitalize()} API key saved"}

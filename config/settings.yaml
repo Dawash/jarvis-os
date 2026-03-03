@@ -4,7 +4,7 @@
 
 system:
   name: "JARVIS-OS"
-  version: "1.0.0"
+  version: "2.0.0"
   codename: "ARC REACTOR"
   log_level: "INFO"
   data_dir: "./data"
@@ -18,7 +18,7 @@ server:
   reload: true
 
 llm:
-  default_provider: "openai"    # openai | anthropic
+  default_provider: "openai"    # openai | anthropic | ollama
   openai:
     model: "gpt-4o"
     api_key: "${OPENAI_API_KEY}"
@@ -29,6 +29,13 @@ llm:
     api_key: "${ANTHROPIC_API_KEY}"
     max_tokens: 4096
     temperature: 0.7
+  ollama:
+    model: "llama3"
+    base_url: "http://localhost:11434"
+
+token_budget:
+  daily_limit: 500000
+  warning_threshold: 0.8
 
 voice:
   enabled: true
